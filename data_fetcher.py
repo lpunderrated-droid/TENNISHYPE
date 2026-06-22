@@ -11,7 +11,7 @@ Streamlit-Refresh die APIs nicht erneut belastet.
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +19,7 @@ import requests
 
 import config
 import database
-from player_utils import normalize_name
+from player_utils import matches_player_name, normalize_name
 
 # Zuletzt von The Odds API gemeldetes Kontingent (aus Response-Headern).
 # Wird bei jedem echten Odds-Aufruf aktualisiert.
@@ -412,3 +412,113 @@ def fetch_scores() -> list[dict]:
     _write_cache(cache_key, results)
     log.info("Ergebnisse geladen: %s abgeschlossene Matches.", len(results))
     return results
+
+
+# --------------------------------------------------------------------------- #
+# API-Tennis – Match-Historie (Form + Oberfläche)
+# --------------------------------------------------------------------------- #
+def _normalize_surface(raw: str | None, tournament: str | None) -> str:
+    """Mappt API-Oberflächenbezeichnung auf Clay/Hard/Grass."""
+    if raw:
+        s = raw.strip().lower()
+        if "clay" in s:
+            return "Clay"
+        if "grass" in s:
+            return "Grass"
+        if "hard" in s:
+            return "Hard"
+    return infer_surface(tournament)
+
+
+def fetch_finished_fixtures() -> list[dict]:
+    """Lädt abgeschlossene Einzel-Matches der letzten N Tage (täglich gecacht).
+
+    Returns normalisierte dicts mit date, first_player, second_player, winner,
+    surface, tournament – sortiert nach Datum absteigend (neueste zuerst).
+    """
+    if not config.API_TENNIS_KEY:
+        return []
+
+    cache = _read_cache("fixtures_finished")
+    if cache is not None:
+        log.info("Match-Historie aus Cache (%s Fixtures).", len(cache))
+        return cache
+
+    start = (datetime.now() - timedelta(days=config.FIXTURES_HISTORY_DAYS)).strftime("%Y-%m-%d")
+    end = datetime.now().strftime("%Y-%m-%d")
+    rohe: list[dict] = []
+
+    for event_type_key in ("265", "266"):  # ATP / WTA Singles
+        data = _get(
+            config.API_TENNIS_BASE,
+            {
+                "method": "get_fixtures",
+                "APIkey": config.API_TENNIS_KEY,
+                "date_start": start,
+                "date_stop": end,
+                "event_type_key": event_type_key,
+            },
+        )
+        if not isinstance(data, dict):
+            continue
+        result = data.get("result", [])
+        if not isinstance(result, list):
+            continue
+        for ev in result:
+            if ev.get("event_status") != "Finished":
+                continue
+            typ = str(ev.get("event_type_type", "")).lower()
+            if "single" not in typ:
+                continue
+            rohe.append(
+                {
+                    "date": ev.get("event_date"),
+                    "first_player": ev.get("event_first_player"),
+                    "second_player": ev.get("event_second_player"),
+                    "winner": ev.get("event_winner"),
+                    "surface": _normalize_surface(ev.get("tournament_surface"), ev.get("tournament_name")),
+                    "tournament": ev.get("tournament_name"),
+                }
+            )
+
+    rohe.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+    _write_cache("fixtures_finished", rohe)
+    log.info("Match-Historie geladen: %s abgeschlossene Fixtures.", len(rohe))
+    return rohe
+
+
+def build_match_histories(fixtures: list[dict], player_names: set[str]) -> dict[str, list[dict]]:
+    """Baut pro Spieler die Historie {date, won, surface} für Form/Oberfläche.
+
+    player_names: volle Namen aus der Odds-API (z. B. 'Francisco Comesana').
+    Returns dict {spielername: [matches...]} – nur Spieler mit mindestens 1 Match.
+    """
+    histories: dict[str, list[dict]] = {name: [] for name in player_names}
+    if not fixtures or not player_names:
+        return histories
+
+    for ev in fixtures:
+        fp, sp = ev.get("first_player"), ev.get("second_player")
+        winner = ev.get("winner")
+        if not fp or not sp or not winner:
+            continue
+        for name in player_names:
+            side = None
+            if matches_player_name(name, fp):
+                side = "first"
+            elif matches_player_name(name, sp):
+                side = "second"
+            if side is None:
+                continue
+            won = (winner == "First Player") if side == "first" else (winner == "Second Player")
+            histories[name].append(
+                {
+                    "date": ev.get("date"),
+                    "won": won,
+                    "surface": ev.get("surface") or "Hard",
+                }
+            )
+
+    for name in histories:
+        histories[name].sort(key=lambda m: str(m.get("date") or ""), reverse=True)
+    return histories

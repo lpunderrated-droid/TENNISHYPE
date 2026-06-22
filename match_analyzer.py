@@ -20,7 +20,7 @@ import config
 import data_fetcher
 import database
 from elo_calculator import expected_score, ranking_to_elo
-from player_utils import lookup_ranking, names_match, normalize_name
+from player_utils import lookup_ranking, matches_player_name, names_match, normalize_name
 
 log = config.log
 
@@ -150,7 +150,7 @@ def h2h_probability(h2h: list[dict] | None, player1: str) -> Optional[float]:
         gewicht = config.H2H_DECAY ** n
         gewicht_summe += gewicht
         # event_winner ist bei API-Tennis oft "First Player" / "Second Player"
-        if raw_winner.strip().lower() == "first player" or names_match(raw_winner, player1):
+        if raw_winner.strip().lower() == "first player" or matches_player_name(raw_winner, player1):
             p1_summe += gewicht
     if gewicht_summe == 0:
         return None
@@ -202,7 +202,12 @@ def _ensure_player(name: str, rankings: dict[str, int]) -> None:
 # --------------------------------------------------------------------------- #
 # Haupt-Einstieg: Top-5 berechnen
 # --------------------------------------------------------------------------- #
-def analyze_match(match: dict, rankings: dict[str, int], use_h2h: bool = True) -> Optional[dict]:
+def analyze_match(
+    match: dict,
+    rankings: dict[str, int],
+    use_h2h: bool = True,
+    histories: dict[str, list[dict]] | None = None,
+) -> Optional[dict]:
     """Analysiert ein einzelnes Match und liefert ein Tipp-dict oder None.
 
     None, wenn die Konfidenz die Mindestschwelle nicht erreicht oder Quoten
@@ -223,9 +228,11 @@ def analyze_match(match: dict, rankings: dict[str, int], use_h2h: bool = True) -
     # Schicht 1: Elo (immer vorhanden)
     p_elo = elo_probability(player1, player2, surface, rankings)
 
-    # Schichten 2 & 3 benötigen Match-Historie (best effort; sonst None = neutral)
-    p_form = form_probability(None, None)
-    p_surface = surface_probability(None, None, surface)
+    # Schichten 2 & 3: Form + Oberfläche aus Match-Historie (API-Tennis Fixtures)
+    hist_p1 = histories.get(player1) if histories else None
+    hist_p2 = histories.get(player2) if histories else None
+    p_form = form_probability(hist_p1, hist_p2)
+    p_surface = surface_probability(hist_p1, hist_p2, surface)
 
     # Schicht 4: H2H (best effort) – nur wenn gewünscht, da langsam
     if use_h2h:
@@ -285,11 +292,18 @@ def generate_top_tips() -> list[dict]:
         log.info("Keine Matches/Quoten für heute verfügbar.")
         return []
 
+    # Match-Historie einmal laden (Form + Oberfläche für alle Spieler des Tages)
+    spieler = {m["player1"] for m in matches} | {m["player2"] for m in matches}
+    fixtures = data_fetcher.fetch_finished_fixtures()
+    histories = data_fetcher.build_match_histories(fixtures, spieler)
+    mit_historie = sum(1 for n in spieler if histories.get(n))
+    log.info("Match-Historie: %s/%s Spieler mit Daten.", mit_historie, len(spieler))
+
     # Durchlauf 1 (schnell, ohne H2H): grobe Vorauswahl über alle Matches
     vorauswahl: list[tuple[dict, dict]] = []
     for match in matches:
         database.insert_match(match)
-        tipp = analyze_match(match, rankings, use_h2h=False)
+        tipp = analyze_match(match, rankings, use_h2h=False, histories=histories)
         if tipp is not None:
             vorauswahl.append((match, tipp))
 
@@ -300,7 +314,7 @@ def generate_top_tips() -> list[dict]:
     # Durchlauf 2 (genau, mit H2H): nur für die engere Auswahl
     kandidaten: list[dict] = []
     for match, _ in engere_wahl:
-        tipp = analyze_match(match, rankings, use_h2h=True)
+        tipp = analyze_match(match, rankings, use_h2h=True, histories=histories)
         if tipp is not None:
             kandidaten.append(tipp)
 

@@ -36,12 +36,30 @@ def name_tokens(name: str | None) -> frozenset[str]:
 
 
 def names_match(a: str | None, b: str | None) -> bool:
-    """True, wenn zwei Namen nach Normalisierung identisch sind."""
+    """True, wenn zwei Namen nach Normalisierung identisch sind (inkl. Token-Reihenfolge)."""
     if not a or not b:
         return False
     if normalize_name(a) == normalize_name(b):
         return True
     return name_tokens(a) == name_tokens(b)
+
+
+def matches_player_name(a: str | None, b: str | None) -> bool:
+    """True, wenn zwei Namen derselbe Spieler sind (voller Name, Abkürzung, Akzente).
+
+    Deckt z. B. 'Francisco Comesana' vs 'F. Comesana' ab (Nachname + Anfangsbuchstabe).
+    """
+    if not a or not b:
+        return False
+    if names_match(a, b):
+        return True
+    ta = normalize_name(a).split()
+    tb = normalize_name(b).split()
+    if not ta or not tb:
+        return False
+    if ta[-1] != tb[-1]:
+        return False
+    return ta[0][0] == tb[0][0]
 
 
 def _build_ranking_index(rankings: dict[str, int]) -> tuple[dict[str, int], dict[frozenset[str], int]]:

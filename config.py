@@ -118,6 +118,9 @@ H2H_LETZTE_N = 5      # letzte 5 Direktvergleiche
 H2H_MIN_MATCHES = 2   # nur werten ab 2 vorhandenen H2H-Matches
 H2H_DECAY = 0.9
 
+# --- Form / Match-Historie ---
+FIXTURES_HISTORY_DAYS = 120  # wie weit zurück get_fixtures für Form + Oberfläche laden
+
 # --- Netzwerk ---
 API_TIMEOUT = 15      # Sekunden pro Request
 API_MAX_RETRIES = 3   # maximal 3 Retry-Versuche
