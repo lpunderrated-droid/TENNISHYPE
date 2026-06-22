@@ -29,6 +29,52 @@ def _combi_stake(c: dict) -> float:
     return float(c.get("einsatz") or config.COMBI_EINSATZ_DEFAULT)
 
 
+def _today_betting_stats(tips: list[dict], date_str: str) -> dict:
+    """KPIs für Heutige Tipps: Einzel + Kombis ohne Doppelzählung."""
+    combis_today = database.get_combis_by_date(date_str)
+    in_combis = database.get_prediction_ids_in_combis(date_str)
+    singles = [t for t in tips if t.get("id") not in in_combis]
+
+    einsatz_combis = sum(_combi_stake(c) for c in combis_today)
+    einsatz_singles = len(singles) * config.EINSATZ
+    gesamt_einsatz = einsatz_combis + einsatz_singles
+
+    moeglich = 0.0
+    realisiert = 0.0
+    for c in combis_today:
+        stake = _combi_stake(c)
+        if c.get("status") == "offen":
+            moeglich += combi.combi_payout(float(c.get("combined_odds") or 0), stake)
+        else:
+            realisiert += float(c.get("gewinn_verlust") or 0)
+
+    for t in singles:
+        if t.get("status") == "offen" and t.get("betano_odds"):
+            moeglich += float(t["betano_odds"]) * config.EINSATZ - config.EINSATZ
+        elif t.get("status") != "offen":
+            realisiert += float(t.get("gewinn_verlust") or 0)
+
+    offene = sum(1 for t in singles if t.get("status") == "offen") + sum(
+        1 for c in combis_today if c.get("status") == "offen"
+    )
+    eingetragen = sum(1 for t in singles if t.get("status") != "offen") + sum(
+        1 for c in combis_today if c.get("status") != "offen"
+    )
+
+    einsatz_sub = f"{len(singles)} Einzel · {len(combis_today)} Kombis"
+    gewinn_sub = f"Realisiert: {realisiert:+.2f} €" if realisiert != 0 else None
+
+    return {
+        "gesamt_einsatz": gesamt_einsatz,
+        "moeglich": moeglich,
+        "offene": offene,
+        "eingetragen": eingetragen,
+        "einsatz_sub": einsatz_sub,
+        "gewinn_sub": gewinn_sub,
+        "in_combis": in_combis,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Design: dunkles "Börsen"-Theme via Custom-CSS
 # --------------------------------------------------------------------------- #
@@ -384,20 +430,26 @@ def render_tips_page() -> None:
     with st.spinner("Lade heutige Tipps …"):
         tips = load_today_tips()
 
-    gesamt_einsatz = len(tips) * config.EINSATZ
-    offene = sum(1 for t in tips if t["status"] == "offen")
-    eingetragen = sum(1 for t in tips if t["status"] != "offen")
-    moegl_gewinn = sum(
-        (t["betano_odds"] * config.EINSATZ - config.EINSATZ)
-        for t in tips if t.get("betano_odds")
-    )
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    stats = _today_betting_stats(tips, date_str)
+
+    gewinn_tone = "green" if stats["moeglich"] > 0 else ""
     st.markdown(
         _tiles_html([
             {"lbl": "Aktive Picks", "val": len(tips), "tone": "green"},
-            {"lbl": "Einsatz gesamt", "val": f"{gesamt_einsatz:.0f} €"},
-            {"lbl": "Möglicher Gewinn", "val": f"+{moegl_gewinn:.2f} €", "tone": "green"},
-            {"lbl": "Offen", "val": offene, "tone": "yellow"},
-            {"lbl": "Eingetragen", "val": eingetragen},
+            {
+                "lbl": "Einsatz gesamt",
+                "val": f"{stats['gesamt_einsatz']:.2f} €",
+                "sub": stats["einsatz_sub"],
+            },
+            {
+                "lbl": "Möglicher Gewinn",
+                "val": f"+{stats['moeglich']:.2f} €",
+                "tone": gewinn_tone,
+                "sub": stats["gewinn_sub"],
+            },
+            {"lbl": "Offen", "val": stats["offene"], "tone": "yellow"},
+            {"lbl": "Eingetragen", "val": stats["eingetragen"]},
         ]),
         unsafe_allow_html=True,
     )
@@ -414,8 +466,7 @@ def render_tips_page() -> None:
 
     st.markdown("<div class='tg-section'>Heutige Positionen</div>", unsafe_allow_html=True)
 
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    in_combis = database.get_prediction_ids_in_combis(date_str)
+    in_combis = stats["in_combis"]
 
     spieler = tuple(sorted({p for t in tips for p in (t["player1"], t["player2"])}))
     ctx = load_player_context(
