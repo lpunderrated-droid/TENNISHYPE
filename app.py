@@ -29,18 +29,19 @@ def _combi_stake(c: dict) -> float:
     return float(c.get("einsatz") or config.COMBI_EINSATZ_DEFAULT)
 
 
-def _tip_hit_stats(
-    predictions: list[dict], date_str: str | None = None
+def _bet_hit_stats(
+    singles: list[dict], combis: list[dict]
 ) -> tuple[float, int, int, int]:
-    """Trefferquote auf Tipp-Ebene: jeder abgerechnete Tipp zählt (inkl. Kombi-Legs).
-
-    Returns: (rate %, gewonnen, abgerechnet, gesamt im Pool)
-    """
-    pool = [p for p in predictions if not date_str or p.get("date") == date_str]
-    settled = [p for p in pool if p["status"] in ("gewonnen", "verloren")]
-    won = [p for p in settled if p["status"] == "gewonnen"]
-    rate = (len(won) / len(settled) * 100) if settled else 0.0
-    return rate, len(won), len(settled), len(pool)
+    """Trefferquote auf Wett-Ebene: jede Einzelwette + jede Kombi zählt als 1 Wette."""
+    settled_s = [p for p in singles if p["status"] in ("gewonnen", "verloren")]
+    settled_c = [c for c in combis if c["status"] in ("gewonnen", "verloren")]
+    won = sum(1 for p in settled_s if p["status"] == "gewonnen") + sum(
+        1 for c in settled_c if c["status"] == "gewonnen"
+    )
+    settled = len(settled_s) + len(settled_c)
+    total = len(singles) + len(combis)
+    rate = (won / settled * 100) if settled else 0.0
+    return rate, won, settled, total
 
 
 def _today_betting_stats(tips: list[dict], date_str: str) -> dict:
@@ -68,12 +69,14 @@ def _today_betting_stats(tips: list[dict], date_str: str) -> dict:
         elif t.get("status") != "offen":
             realisiert += float(t.get("gewinn_verlust") or 0)
 
-    offene = sum(1 for t in tips if t.get("status") == "offen")
-    trefferquote, gewonnen_tips, settled_tips, _ = _tip_hit_stats(tips)
-    if settled_tips:
-        treffer_sub = f"{gewonnen_tips}/{settled_tips} Tipps korrekt"
-    elif tips:
-        treffer_sub = f"0/{len(tips)} abgerechnet"
+    offene = sum(1 for t in singles if t.get("status") == "offen") + sum(
+        1 for c in combis_today if c.get("status") == "offen"
+    )
+    trefferquote, gewonnen_w, settled_w, total_w = _bet_hit_stats(singles, combis_today)
+    if settled_w:
+        treffer_sub = f"{gewonnen_w}/{settled_w} Wetten gewonnen"
+    elif total_w:
+        treffer_sub = f"0/{total_w} abgerechnet"
     else:
         treffer_sub = None
 
@@ -86,7 +89,7 @@ def _today_betting_stats(tips: list[dict], date_str: str) -> dict:
         "offene": offene,
         "trefferquote": trefferquote,
         "treffer_sub": treffer_sub,
-        "settled_tips": settled_tips,
+        "settled_wetten": settled_w,
         "einsatz_sub": einsatz_sub,
         "gewinn_sub": gewinn_sub,
         "in_combis": in_combis,
@@ -454,8 +457,8 @@ def render_tips_page() -> None:
     gewinn_tone = "green" if stats["moeglich"] > 0 else ""
     tq = stats["trefferquote"]
     tq_tone = (
-        "green" if stats["settled_tips"] and tq >= 50
-        else ("red" if stats["settled_tips"] and tq < 50 else "")
+        "green" if stats["settled_wetten"] and tq >= 50
+        else ("red" if stats["settled_wetten"] and tq < 50 else "")
     )
     st.markdown(
         _tiles_html([
@@ -727,7 +730,6 @@ def render_tracking_page() -> None:
 
     alle_combis = database.get_all_combis()
     singles = database.get_single_predictions_for_tracking()
-    all_predictions = database.get_all_predictions()
     settled_singles = [p for p in singles if p["status"] in ("gewonnen", "verloren")]
     settled_combis = [c for c in alle_combis if c["status"] in ("gewonnen", "verloren")]
 
@@ -741,10 +743,10 @@ def render_tracking_page() -> None:
         _combi_stake(c) for c in settled_combis
     )
     roi = (gesamt_pnl / settled_einsatz * 100) if settled_einsatz > 0 else 0.0
-    trefferquote, gewonnen_tips, settled_tips, _ = _tip_hit_stats(all_predictions)
+    trefferquote, gewonnen_w, settled_w, _ = _bet_hit_stats(singles, alle_combis)
     tq_tone = (
-        "green" if settled_tips and trefferquote >= 50
-        else ("red" if settled_tips and trefferquote < 50 else "")
+        "green" if settled_w and trefferquote >= 50
+        else ("red" if settled_w and trefferquote < 50 else "")
     )
 
     pnl_tone = "green" if gesamt_pnl > 0 else ("red" if gesamt_pnl < 0 else "")
@@ -756,7 +758,7 @@ def render_tracking_page() -> None:
             {"lbl": "Gewinn / Verlust", "val": f"{gesamt_pnl:+.2f} €", "tone": pnl_tone},
             {"lbl": "ROI", "val": f"{roi:+.1f} %", "tone": roi_tone},
             {"lbl": "Trefferquote", "val": f"{trefferquote:.1f} %",
-             "sub": f"{gewonnen_tips}/{settled_tips} Tipps korrekt", "tone": tq_tone},
+             "sub": f"{gewonnen_w}/{settled_w} Wetten gewonnen", "tone": tq_tone},
         ]),
         unsafe_allow_html=True,
     )
@@ -774,10 +776,7 @@ def render_tracking_page() -> None:
          "confidence": None, "tip": combi.format_legs_summary(c.get("legs") or [])}
         for c in settled_combis
     ]
-    settled_tips_for_chart = [
-        p for p in all_predictions if p["status"] in ("gewonnen", "verloren")
-    ]
-    _render_charts(settled_for_charts, settled_tips_for_chart)
+    _render_charts(settled_for_charts)
     return None
 
 
@@ -902,14 +901,14 @@ def _render_table(alle: list[dict]) -> None:
     return None
 
 
-def _render_charts(settled_bets: list[dict], settled_tips: list[dict] | None = None) -> None:
+def _render_charts(settled: list[dict]) -> None:
     """Rendert die drei Plotly-Charts mit Fallbacks. Gibt None zurück."""
     st.markdown("<div class='tg-section'>Auswertung</div>", unsafe_allow_html=True)
-    if not settled_bets and not settled_tips:
+    if not settled:
         st.info("Sobald Ergebnisse eingetragen sind, erscheinen hier Charts.")
         return None
 
-    df = pd.DataFrame(settled_bets)
+    df = pd.DataFrame(settled)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values("date")
 
@@ -929,18 +928,16 @@ def _render_charts(settled_bets: list[dict], settled_tips: list[dict] | None = N
             _style_fig(fig)
             st.plotly_chart(fig, use_container_width=True)
 
-    # Chart 2: Trefferquote pro Monat (Tipp-Ebene, inkl. Kombi-Legs)
+    # Chart 2: Trefferquote pro Monat (Wett-Ebene: Einzel + Kombi)
     with c2:
         st.markdown("**Trefferquote pro Monat**")
-        tips_df = pd.DataFrame(settled_tips or [])
-        if tips_df.empty:
+        if df.empty:
             st.info("Keine Daten.")
         else:
-            tips_df["date"] = pd.to_datetime(tips_df["date"], errors="coerce")
-            tips_df = tips_df.dropna(subset=["date"])
-            tips_df["monat"] = tips_df["date"].dt.strftime("%Y-%m")
-            tips_df["gewonnen"] = (tips_df["status"] == "gewonnen").astype(int)
-            grp = tips_df.groupby("monat").agg(quote=("gewonnen", "mean")).reset_index()
+            tmp = df.copy()
+            tmp["monat"] = tmp["date"].dt.strftime("%Y-%m")
+            tmp["gewonnen"] = (tmp["status"] == "gewonnen").astype(int)
+            grp = tmp.groupby("monat").agg(quote=("gewonnen", "mean")).reset_index()
             grp["quote"] = grp["quote"] * 100
             fig = px.bar(grp, x="monat", y="quote",
                          labels={"monat": "Monat", "quote": "Trefferquote %"})
