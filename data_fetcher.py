@@ -430,32 +430,52 @@ def _normalize_surface(raw: str | None, tournament: str | None) -> str:
     return infer_surface(tournament)
 
 
-def fetch_finished_fixtures() -> list[dict]:
-    """Lädt abgeschlossene Einzel-Matches der letzten N Tage (täglich gecacht).
+def _fixture_event_to_row(ev: dict) -> Optional[dict]:
+    """Filtert abgeschlossene Einzel-Matches und normalisiert auf internes Format."""
+    if ev.get("event_status") != "Finished":
+        return None
+    typ = str(ev.get("event_type_type", "")).lower()
+    if "single" not in typ:
+        return None
+    return {
+        "date": ev.get("event_date"),
+        "first_player": ev.get("event_first_player"),
+        "second_player": ev.get("event_second_player"),
+        "winner": ev.get("event_winner"),
+        "surface": _normalize_surface(ev.get("tournament_surface"), ev.get("tournament_name")),
+        "tournament": ev.get("tournament_name"),
+    }
 
-    Returns normalisierte dicts mit date, first_player, second_player, winner,
-    surface, tournament – sortiert nach Datum absteigend (neueste zuerst).
-    """
-    if not config.API_TENNIS_KEY:
-        return []
 
-    cache = _read_cache("fixtures_finished")
-    if cache is not None:
-        log.info("Match-Historie aus Cache (%s Fixtures).", len(cache))
-        return cache
+def _iter_fixture_date_chunks(days_back: int, chunk_days: int):
+    """Erzeugt nicht-überlappende Datums-Intervalle (neuestes zuerst)."""
+    end = datetime.now().date()
+    start = end - timedelta(days=days_back)
+    cur_end = end
+    while cur_end > start:
+        cur_start = max(start, cur_end - timedelta(days=chunk_days))
+        yield cur_start.strftime("%Y-%m-%d"), cur_end.strftime("%Y-%m-%d")
+        cur_end = cur_start
 
-    start = (datetime.now() - timedelta(days=config.FIXTURES_HISTORY_DAYS)).strftime("%Y-%m-%d")
-    end = datetime.now().strftime("%Y-%m-%d")
-    rohe: list[dict] = []
 
-    for event_type_key in ("265", "266"):  # ATP / WTA Singles
+def _fetch_finished_fixtures_for_type(event_type_key: str, *, chunked: bool) -> list[dict]:
+    """Lädt abgeschlossene Einzel-Fixtures für einen event_type_key."""
+    rows: list[dict] = []
+    if chunked:
+        ranges = list(_iter_fixture_date_chunks(config.FIXTURES_HISTORY_DAYS, config.FIXTURES_CHUNK_DAYS))
+    else:
+        start = (datetime.now() - timedelta(days=config.FIXTURES_HISTORY_DAYS)).strftime("%Y-%m-%d")
+        end = datetime.now().strftime("%Y-%m-%d")
+        ranges = [(start, end)]
+
+    for date_start, date_stop in ranges:
         data = _get(
             config.API_TENNIS_BASE,
             {
                 "method": "get_fixtures",
                 "APIkey": config.API_TENNIS_KEY,
-                "date_start": start,
-                "date_stop": end,
+                "date_start": date_start,
+                "date_stop": date_stop,
                 "event_type_key": event_type_key,
             },
         )
@@ -465,26 +485,51 @@ def fetch_finished_fixtures() -> list[dict]:
         if not isinstance(result, list):
             continue
         for ev in result:
-            if ev.get("event_status") != "Finished":
-                continue
-            typ = str(ev.get("event_type_type", "")).lower()
-            if "single" not in typ:
-                continue
-            rohe.append(
-                {
-                    "date": ev.get("event_date"),
-                    "first_player": ev.get("event_first_player"),
-                    "second_player": ev.get("event_second_player"),
-                    "winner": ev.get("event_winner"),
-                    "surface": _normalize_surface(ev.get("tournament_surface"), ev.get("tournament_name")),
-                    "tournament": ev.get("tournament_name"),
-                }
-            )
+            row = _fixture_event_to_row(ev)
+            if row:
+                rows.append(row)
+    return rows
 
-    rohe.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
-    _write_cache("fixtures_finished", rohe)
-    log.info("Match-Historie geladen: %s abgeschlossene Fixtures.", len(rohe))
-    return rohe
+
+def fetch_finished_fixtures() -> list[dict]:
+    """Lädt abgeschlossene Einzel-Matches der letzten N Tage (täglich gecacht).
+
+    ATP/WTA plus Challenger (für Spieler wie Mikrut, die überwiegend Challenger
+    spielen). Challenger wird in 30-Tage-Chunks geladen, da größere Zeiträume
+    bei der API HTTP 500 auslösen.
+
+    Returns normalisierte dicts mit date, first_player, second_player, winner,
+    surface, tournament – sortiert nach Datum absteigend (neueste zuerst).
+    """
+    if not config.API_TENNIS_KEY:
+        return []
+
+    cache = _read_cache("fixtures_finished_v2")
+    if cache is not None:
+        log.info("Match-Historie aus Cache (%s Fixtures).", len(cache))
+        return cache
+
+    rohe: list[dict] = []
+    seen: set[tuple] = set()
+
+    for event_type_key in config.FIXTURES_EVENT_TYPES_TOUR:
+        rohe.extend(_fetch_finished_fixtures_for_type(event_type_key, chunked=False))
+
+    for event_type_key in config.FIXTURES_EVENT_TYPES_CHALLENGER:
+        rohe.extend(_fetch_finished_fixtures_for_type(event_type_key, chunked=True))
+
+    deduped: list[dict] = []
+    for row in rohe:
+        key = (row.get("date"), row.get("first_player"), row.get("second_player"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+
+    deduped.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+    _write_cache("fixtures_finished_v2", deduped)
+    log.info("Match-Historie geladen: %s abgeschlossene Fixtures.", len(deduped))
+    return deduped
 
 
 def build_match_histories(fixtures: list[dict], player_names: set[str]) -> dict[str, list[dict]]:

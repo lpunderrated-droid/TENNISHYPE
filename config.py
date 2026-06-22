@@ -120,6 +120,10 @@ H2H_DECAY = 0.9
 
 # --- Form / Match-Historie ---
 FIXTURES_HISTORY_DAYS = 120  # wie weit zurück get_fixtures für Form + Oberfläche laden
+# API-Tennis event_type_key: ATP/WTA in einem Abruf; Challenger in 30-Tage-Chunks (API-Limit)
+FIXTURES_EVENT_TYPES_TOUR = ("265", "266")  # Atp Singles, Wta Singles
+FIXTURES_EVENT_TYPES_CHALLENGER = ("281", "272")  # Challenger Men/Women Singles
+FIXTURES_CHUNK_DAYS = 30  # Challenger-Abrufe pro Chunk (größere Zeiträume → HTTP 500)
 
 # --- Netzwerk ---
 API_TIMEOUT = 15      # Sekunden pro Request
