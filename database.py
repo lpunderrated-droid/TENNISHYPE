@@ -646,6 +646,116 @@ def get_all_combis() -> list[dict]:
         return []
 
 
+def get_open_combis() -> list[dict]:
+    """Alle offenen Kombiwetten inkl. Legs."""
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                text("SELECT * FROM combis WHERE status = 'offen' ORDER BY date DESC, id DESC;")
+            ).mappings().all()
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["legs"] = _fetch_combi_legs(conn, int(row["id"]))
+                result.append(item)
+            return result
+    except SQLAlchemyError as exc:
+        log.error("get_open_combis fehlgeschlagen: %s", exc)
+        return []
+
+
+def update_combi_result(combi_id: int, gewonnen: bool) -> bool:
+    """Trägt das Ergebnis einer Kombiwette manuell ein und synchronisiert alle Legs."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                text("SELECT * FROM combis WHERE id = :id;"), {"id": combi_id}
+            ).mappings().first()
+            if row is None:
+                log.warning("update_combi_result: Kombi %s nicht gefunden", combi_id)
+                return False
+
+            stake = float(row["einsatz"] or config.EINSATZ)
+            combined = float(row["combined_odds"] or 0)
+            now = datetime.now().isoformat(timespec="seconds")
+
+            if gewonnen:
+                status = "gewonnen"
+                pnl = round(combined * stake - stake, 2)
+                leg_status = "gewonnen"
+            else:
+                status = "verloren"
+                pnl = -stake
+                leg_status = "verloren"
+
+            conn.execute(
+                text("""
+                    UPDATE combis
+                    SET status = :status, gewinn_verlust = :pnl, eingetragen_am = :now
+                    WHERE id = :id;
+                """),
+                {"status": status, "pnl": pnl, "now": now, "id": combi_id},
+            )
+
+            leg_rows = conn.execute(
+                text("SELECT prediction_id FROM combi_legs WHERE combi_id = :id;"),
+                {"id": combi_id},
+            ).mappings().all()
+            for leg in leg_rows:
+                conn.execute(
+                    text("""
+                        UPDATE predictions
+                        SET status = :status, gewinn_verlust = 0.0, eingetragen_am = :now
+                        WHERE id = :pid;
+                    """),
+                    {"status": leg_status, "now": now, "pid": leg["prediction_id"]},
+                )
+
+        log.info("Kombi-Ergebnis eingetragen: #%s -> %s (%.2f €)", combi_id, status, pnl)
+        return True
+    except SQLAlchemyError as exc:
+        log.error("update_combi_result fehlgeschlagen: %s", exc)
+        return False
+
+
+def reset_combi_result(combi_id: int) -> bool:
+    """Setzt eine Kombiwette und alle Legs auf offen zurück."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                text("SELECT id FROM combis WHERE id = :id;"), {"id": combi_id}
+            ).mappings().first()
+            if row is None:
+                return False
+
+            conn.execute(
+                text("""
+                    UPDATE combis
+                    SET status = 'offen', gewinn_verlust = 0.0, eingetragen_am = NULL
+                    WHERE id = :id;
+                """),
+                {"id": combi_id},
+            )
+
+            leg_rows = conn.execute(
+                text("SELECT prediction_id FROM combi_legs WHERE combi_id = :id;"),
+                {"id": combi_id},
+            ).mappings().all()
+            for leg in leg_rows:
+                conn.execute(
+                    text("""
+                        UPDATE predictions
+                        SET status = 'offen', gewinn_verlust = 0.0, eingetragen_am = NULL
+                        WHERE id = :pid;
+                    """),
+                    {"pid": leg["prediction_id"]},
+                )
+        return True
+    except SQLAlchemyError as exc:
+        log.error("reset_combi_result fehlgeschlagen: %s", exc)
+        return False
+
+
 def get_single_predictions_for_tracking() -> list[dict]:
     """Tipps, die nicht Teil einer Kombi sind (für Einzel-Tracking)."""
     try:

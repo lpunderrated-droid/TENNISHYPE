@@ -482,6 +482,52 @@ def _render_combi_section(tips: list[dict], date_str: str, in_combis: set[int]) 
                 f"Mindestens {config.COMBI_MIN_LEGS} Legs · Einsatz {config.EINSATZ:.0f} € · "
                 "Legs in Kombis zählen nicht als Einzelwette im Tracking."
             )
+
+    _render_combi_manual_fallback(combis)
+    return None
+
+
+def _combi_option_label(c: dict) -> str:
+    """Anzeigetext für Kombi-Auswahl in Dropdowns."""
+    legs = c.get("legs") or []
+    tips = " + ".join(leg.get("tip") or "?" for leg in legs)
+    return f"{c.get('date')} | {len(legs)} Legs @ {c.get('combined_odds', 0):.2f} ({tips})"
+
+
+def _render_combi_manual_fallback(combis: list[dict] | None = None) -> None:
+    """Manuelles Eintragen oder Zurücksetzen offener Kombiwetten."""
+    offene = [c for c in (combis or database.get_open_combis()) if c.get("status") == "offen"]
+    if not offene:
+        return None
+
+    with st.expander(f"🎰 Kombi-Ergebnis manuell · {len(offene)} offen"):
+        st.caption(
+            "Setzt die ganze Kombiwette auf Gewonnen oder Verloren und synchronisiert alle Legs. "
+            "Alternativ kannst du auch einzelne Legs im Einzel-Fallback unten abrechnen."
+        )
+        optionen = {_combi_option_label(c): int(c["id"]) for c in offene}
+        auswahl = st.selectbox("Offene Kombi wählen", list(optionen.keys()), key="combi_manual_pick")
+        ergebnis = st.radio("Ergebnis", ["Gewonnen", "Verloren"], horizontal=True, key="combi_manual_result")
+        col_save, col_reset = st.columns(2)
+        with col_save:
+            if st.button("💾 Kombi speichern", use_container_width=True):
+                cid = optionen[auswahl]
+                ok = database.update_combi_result(cid, gewonnen=(ergebnis == "Gewonnen"))
+                if ok:
+                    database.update_bankroll_history()
+                    st.success("Kombi-Ergebnis gespeichert.")
+                    st.rerun()
+                else:
+                    st.error("Speichern fehlgeschlagen – siehe Log.")
+        with col_reset:
+            if st.button("↩️ Kombi zurücksetzen", use_container_width=True):
+                cid = optionen[auswahl]
+                if database.reset_combi_result(cid):
+                    database.update_bankroll_history()
+                    st.success("Kombi zurückgesetzt (alle Legs wieder offen).")
+                    st.rerun()
+                else:
+                    st.error("Zurücksetzen fehlgeschlagen.")
     return None
 
 
@@ -618,6 +664,7 @@ def render_tracking_page() -> None:
     )
 
     _render_manual_fallback()
+    _render_combi_manual_fallback(None)
 
     st.divider()
     _render_combi_table(alle_combis)
