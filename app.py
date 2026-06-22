@@ -163,6 +163,16 @@ def load_today_tips(_cache_key: str) -> list[dict]:
         return []
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def run_auto_settle(_cache_key: str) -> int:
+    """Rechnet offene Tipps automatisch ab (höchstens alle 30 Min pro Server)."""
+    try:
+        return match_analyzer.auto_settle()
+    except Exception as exc:  # bewusst breit: UI darf nie crashen
+        log.error("run_auto_settle fehlgeschlagen: %s", exc)
+        return 0
+
+
 def status_badge(status: str) -> str:
     """Gibt das passende Status-Emoji-Label zurück."""
     return {"gewonnen": "✅ Gewonnen", "verloren": "❌ Verloren"}.get(status, "🟡 Offen")
@@ -486,6 +496,11 @@ def main() -> None:
         return None
 
     database.init_db()
+
+    # Ergebnisse automatisch abrechnen (gedrosselt auf alle 30 Minuten)
+    neu_abgerechnet = run_auto_settle(datetime.now().strftime("%Y-%m-%d-%H"))
+    if neu_abgerechnet:
+        st.sidebar.success(f"✅ {neu_abgerechnet} Ergebnis(se) automatisch eingetragen")
 
     st.sidebar.title("🎾 Navigation")
     seite = st.sidebar.radio("Seite", ["Heutige Tipps", "Tracking & Statistiken"])

@@ -312,3 +312,43 @@ def generate_top_tips() -> list[dict]:
 
     log.info("%s konfidente Tipps für heute gespeichert.", len(top))
     return database.get_predictions_by_date(heute)
+
+
+def auto_settle() -> int:
+    """Rechnet offene Tipps automatisch ab, sobald Ergebnisse vorliegen.
+
+    Holt abgeschlossene Matches von The Odds API (gleicher Namensraum wie die
+    gespeicherten Quoten) und setzt passende offene Tipps auf gewonnen/verloren.
+    Gibt die Anzahl der automatisch abgerechneten Tipps zurück (0 bei keinen).
+    """
+    offene = database.get_open_predictions()
+    if not offene:
+        return 0
+
+    ergebnisse = data_fetcher.fetch_scores()
+    if not ergebnisse:
+        return 0
+
+    def norm(name: str | None) -> str:
+        return (name or "").strip().lower()
+
+    # Nachschlage-Index: Spielerpaar -> Gewinnername (Reihenfolge-unabhängig)
+    lookup: dict[frozenset, str] = {}
+    for r in ergebnisse:
+        paar = frozenset({norm(r.get("player1")), norm(r.get("player2"))})
+        lookup[paar] = norm(r.get("winner"))
+
+    abgerechnet = 0
+    for p in offene:
+        paar = frozenset({norm(p.get("player1")), norm(p.get("player2"))})
+        gewinner = lookup.get(paar)
+        if not gewinner:
+            continue
+        gewonnen = (gewinner == norm(p.get("tip")))
+        if database.update_prediction_result(p["id"], gewonnen):
+            abgerechnet += 1
+
+    if abgerechnet:
+        database.update_bankroll_history()
+        log.info("auto_settle: %s Tipps automatisch abgerechnet.", abgerechnet)
+    return abgerechnet

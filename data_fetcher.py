@@ -93,6 +93,21 @@ def infer_surface(tournament: str | None) -> str:
 # --------------------------------------------------------------------------- #
 # The Odds API – Matches + Quoten
 # --------------------------------------------------------------------------- #
+def active_tennis_keys() -> list[str]:
+    """Ermittelt die aktiven Tennis-Sport-Keys von The Odds API.
+
+    The Odds API hat keinen festen Key 'tennis' – stattdessen werden alle
+    aktiven Turniere der Gruppe 'Tennis' zurückgegeben. Liste evtl. leer.
+    """
+    sports = _get(f"{config.ODDS_API_BASE}/sports", {"apiKey": config.ODDS_API_KEY})
+    if not isinstance(sports, list):
+        return []
+    return [
+        s.get("key") for s in sports
+        if s.get("group") == "Tennis" and s.get("active") and s.get("key")
+    ]
+
+
 def _pick_bookmaker_odds(event: dict) -> tuple[Optional[float], Optional[float], Optional[str]]:
     """Wählt aus einem Event die Quoten des bevorzugten Buchmachers (h2h).
 
@@ -139,14 +154,7 @@ def fetch_odds() -> list[dict]:
         log.info("Quoten aus Cache geladen (%s Matches).", len(cache))
         return cache
 
-    # 1) Aktive Tennis-Sportarten ermitteln (The Odds API hat keinen festen Key 'tennis')
-    sports = _get(f"{config.ODDS_API_BASE}/sports", {"apiKey": config.ODDS_API_KEY})
-    if not isinstance(sports, list):
-        return []
-    tennis_keys = [
-        s.get("key") for s in sports
-        if s.get("group") == "Tennis" and s.get("active") and s.get("key")
-    ]
+    tennis_keys = active_tennis_keys()
     if not tennis_keys:
         log.info("Aktuell keine aktiven Tennis-Sportarten bei The Odds API.")
         return []
@@ -285,3 +293,68 @@ def fetch_h2h(player1: str, player2: str) -> Optional[list[dict]]:
         return None
     _write_cache(cache_key, h2h)
     return h2h
+
+
+# --------------------------------------------------------------------------- #
+# The Odds API – Ergebnisse (für automatische Abrechnung)
+# --------------------------------------------------------------------------- #
+def _winner_from_scores(event: dict) -> Optional[str]:
+    """Ermittelt den Gewinner eines abgeschlossenen Events aus dem scores-Feld.
+
+    Gibt den Spielernamen mit dem höheren Score zurück oder None, wenn die
+    Daten unvollständig/uneindeutig sind (z. B. Gleichstand, Aufgabe ohne Score).
+    """
+    scores = event.get("scores")
+    if not isinstance(scores, list) or len(scores) < 2:
+        return None
+    parsed: list[tuple[str, float]] = []
+    for s in scores:
+        try:
+            parsed.append((s.get("name"), float(s.get("score"))))
+        except (TypeError, ValueError):
+            return None
+    parsed.sort(key=lambda x: x[1], reverse=True)
+    if parsed[0][1] == parsed[1][1]:
+        return None  # uneindeutig
+    return parsed[0][0]
+
+
+def fetch_scores() -> list[dict]:
+    """Holt abgeschlossene Tennis-Ergebnisse der letzten Tage von The Odds API.
+
+    Returns eine Liste {player1, player2, winner} (evtl. leer). Nutzt einen
+    kurzlebigen, stündlichen Cache, damit Ergebnisse zeitnah aktualisiert
+    werden, ohne die API bei jedem Refresh zu belasten.
+    """
+    if not config.ODDS_API_KEY:
+        return []
+
+    cache_key = "scores_" + datetime.now().strftime("%H")  # stündlich frisch
+    cache = _read_cache(cache_key)
+    if cache is not None:
+        return cache
+
+    results: list[dict] = []
+    for key in active_tennis_keys():
+        events = _get(
+            f"{config.ODDS_API_BASE}/sports/{key}/scores",
+            {"apiKey": config.ODDS_API_KEY, "daysFrom": 3},
+        )
+        if not isinstance(events, list):
+            continue
+        for event in events:
+            if not event.get("completed"):
+                continue
+            winner = _winner_from_scores(event)
+            if winner:
+                results.append(
+                    {
+                        "player1": event.get("home_team"),
+                        "player2": event.get("away_team"),
+                        "winner": winner,
+                    }
+                )
+
+    _write_cache(cache_key, results)
+    log.info("Ergebnisse geladen: %s abgeschlossene Matches.", len(results))
+    return results
