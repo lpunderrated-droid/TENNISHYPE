@@ -86,6 +86,11 @@ def _form_score(matches: list[dict] | None) -> Optional[float]:
     return max(0.0, score * (1.0 - penalty))
 
 
+def player_form_score(matches: list[dict] | None) -> Optional[float]:
+    """Form-Score (0..1) eines Spielers für die UI – identisch zur Algorithmus-Schicht 2."""
+    return _form_score(matches)
+
+
 def form_probability(matches_p1: list[dict] | None, matches_p2: list[dict] | None) -> Optional[float]:
     """Schicht 2: relative Form von player1 gegenüber player2 (0..1) oder None."""
     s1 = _form_score(matches_p1)

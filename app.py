@@ -14,7 +14,9 @@ import streamlit as st
 
 import config
 import database
+import data_fetcher
 import match_analyzer
+from player_utils import lookup_ranking
 
 log = config.log
 
@@ -64,7 +66,14 @@ section[data-testid="stSidebar"] { background: #0d1116; border-right: 1px solid 
 .tcard-top { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; }
 .matchup { font-size:18px; font-weight:700; }
 .matchup .win { color:var(--green); }
-.matchup .vs { color:var(--muted); font-weight:500; margin:0 8px; font-size:14px; }
+.matchup .player-line { display:block; margin:2px 0; }
+.matchup .vs { color:var(--muted); font-weight:500; margin:4px 0; font-size:13px; display:block; }
+.pstat { font-size:11px; color:var(--muted); font-weight:600; margin-top:3px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.pstat .rank { color:#c7ccd1; background:var(--panel2); border:1px solid var(--border);
+  border-radius:6px; padding:1px 7px; font-size:10px; }
+.pstat .form-good { color:var(--green); }
+.pstat .form-mid { color:var(--yellow); }
+.pstat .form-bad { color:var(--red); }
 .matchup .loser { color:var(--text); opacity:.65; }
 .meta { color:var(--muted); font-size:12px; margin-top:5px; display:flex; gap:8px; flex-wrap:wrap; }
 .chip { background:var(--panel2); border:1px solid var(--border); border-radius:999px;
@@ -133,7 +142,8 @@ hr { border-color:var(--border); }
   .tcard { padding:12px; border-radius:12px; margin-bottom:10px; }
   .tcard:hover { transform:none; }
   .matchup { font-size:14px; }
-  .matchup .vs { display:inline-block; margin:0 5px; font-size:11px; }
+  .matchup .player-line { margin:4px 0; }
+  .pstat { font-size:10px; }
   .meta { gap:5px; margin-top:4px; }
   .chip { font-size:10px; padding:2px 7px; max-width:100%; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
@@ -296,6 +306,47 @@ def status_badge(status: str) -> str:
     return {"gewonnen": "✅ Gewonnen", "verloren": "❌ Verloren"}.get(status, "🟡 Offen")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_player_context(_cache_key: str, player_names: tuple[str, ...]) -> dict:
+    """Lädt Rankings + Match-Historie für die Anzeige auf den Tipp-Karten."""
+    try:
+        rankings = data_fetcher.fetch_rankings()
+        fixtures = data_fetcher.fetch_finished_fixtures()
+        histories = data_fetcher.build_match_histories(fixtures, set(player_names))
+        return {"rankings": rankings, "histories": histories}
+    except Exception as exc:
+        log.error("load_player_context fehlgeschlagen: %s", exc)
+        return {"rankings": {}, "histories": {}}
+
+
+def _form_class(score: float | None) -> str:
+    """CSS-Klasse für Form-Färbung (grün/gelb/rot)."""
+    if score is None:
+        return ""
+    if score >= 0.6:
+        return "form-good"
+    if score >= 0.4:
+        return "form-mid"
+    return "form-bad"
+
+
+def _player_stats_html(name: str, rankings: dict, histories: dict) -> str:
+    """Baut Rank + Form-Zeile unter dem Spielernamen. Gibt HTML zurück."""
+    rank = lookup_ranking(name, rankings)
+    rank_html = f"<span class='rank'>#{rank}</span>" if rank else "<span class='rank'>#—</span>"
+
+    hist = histories.get(name, [])
+    form = match_analyzer.player_form_score(hist)
+    if form is not None:
+        form_html = f"<span class='{_form_class(form)}'>Form {form:.0%}</span>"
+        if hist:
+            form_html += f"<span style='color:var(--muted);font-weight:400'>({min(len(hist), config.FORM_LETZTE_N)} Sp.)</span>"
+    else:
+        form_html = "<span>Form —</span>"
+
+    return f"<div class='pstat'>{rank_html}<span>·</span>{form_html}</div>"
+
+
 # --------------------------------------------------------------------------- #
 # SEITE 1: Heutige Tipps
 # --------------------------------------------------------------------------- #
@@ -348,11 +399,20 @@ def render_tips_page() -> None:
         return None
 
     st.markdown("<div class='tg-section'>Heutige Positionen</div>", unsafe_allow_html=True)
-    st.markdown("".join(_tip_card_html(t) for t in tips), unsafe_allow_html=True)
+
+    spieler = tuple(sorted({p for t in tips for p in (t["player1"], t["player2"])}))
+    ctx = load_player_context(datetime.now().strftime("%Y-%m-%d"), spieler)
+    rankings = ctx.get("rankings", {})
+    histories = ctx.get("histories", {})
+
+    st.markdown(
+        "".join(_tip_card_html(t, rankings, histories) for t in tips),
+        unsafe_allow_html=True,
+    )
     return None
 
 
-def _tip_card_html(t: dict) -> str:
+def _tip_card_html(t: dict, rankings: dict, histories: dict) -> str:
     """Baut eine Tipp-Karte im Trading-Look. Gibt einen HTML-String zurück."""
     tip = t.get("tip", "")
     p1, p2 = t.get("player1", ""), t.get("player2", "")
@@ -392,8 +452,13 @@ def _tip_card_html(t: dict) -> str:
     return (
         "<div class='tcard'>"
         "<div class='tcard-top'><div>"
-        f"<div class='matchup'><span class='{p1_cls}'>{html.escape(p1)}</span>"
-        f"<span class='vs'>vs</span><span class='{p2_cls}'>{html.escape(p2)}</span></div>"
+        "<div class='matchup'>"
+        f"<div class='player-line'><span class='{p1_cls}'>{html.escape(p1)}</span>"
+        f"{_player_stats_html(p1, rankings, histories)}</div>"
+        f"<span class='vs'>vs</span>"
+        f"<div class='player-line'><span class='{p2_cls}'>{html.escape(p2)}</span>"
+        f"{_player_stats_html(p2, rankings, histories)}</div>"
+        "</div>"
         f"<div class='meta'>{''.join(meta)}</div></div>"
         f"<span class='pill {pill[0]}'>{pill[1]}</span></div>"
         "<div class='tgrid'>"
