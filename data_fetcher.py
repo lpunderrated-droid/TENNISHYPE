@@ -18,6 +18,7 @@ from typing import Optional
 import requests
 
 import config
+from player_utils import normalize_name
 
 log = config.log
 
@@ -212,11 +213,6 @@ def fetch_odds() -> list[dict]:
 # --------------------------------------------------------------------------- #
 # API-Tennis – Rankings (Elo-Proxy)
 # --------------------------------------------------------------------------- #
-def _normalize_name(name: str | None) -> str:
-    """Vereinheitlicht Spielernamen für den Abgleich zwischen den APIs."""
-    return (name or "").strip().lower()
-
-
 def fetch_rankings() -> dict[str, int]:
     """Lädt ATP- und WTA-Weltranglisten von API-Tennis.
 
@@ -247,7 +243,7 @@ def fetch_rankings() -> dict[str, int]:
         if not isinstance(result, list):
             continue
         for row in result:
-            name = _normalize_name(row.get("player"))
+            name = normalize_name(row.get("player"))
             try:
                 rank = int(row.get("place"))
             except (TypeError, ValueError):
@@ -271,7 +267,7 @@ def fetch_h2h(player1: str, player2: str) -> Optional[list[dict]]:
     """
     if not config.API_TENNIS_KEY:
         return None
-    cache_key = f"h2h_{_normalize_name(player1)}_{_normalize_name(player2)}".replace(" ", "_")
+    cache_key = f"h2h_{normalize_name(player1)}_{normalize_name(player2)}".replace(" ", "_")
     cache = _read_cache(cache_key)
     if cache is not None:
         return cache

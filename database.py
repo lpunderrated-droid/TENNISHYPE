@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
 import config
+from player_utils import normalize_name, names_match
 
 log = config.log
 
@@ -172,7 +173,7 @@ def upsert_player(name: str, clay_elo: float, hard_elo: float, grass_elo: float)
 
 
 def get_player(name: str) -> Optional[dict]:
-    """Liest einen Spieler. Gibt ein dict oder None zurück, wenn nicht gefunden."""
+    """Liest einen Spieler per exaktem Namen. Gibt ein dict oder None zurück."""
     try:
         with get_connection() as conn:
             row = conn.execute(
@@ -181,6 +182,32 @@ def get_player(name: str) -> Optional[dict]:
             return dict(row) if row else None
     except SQLAlchemyError as exc:
         log.error("get_player(%s) fehlgeschlagen: %s", name, exc)
+        return None
+
+
+def find_player(name: str) -> Optional[dict]:
+    """Findet einen Spieler – zuerst exakt, dann per normalisiertem Namen.
+
+    Nötig, weil Odds-API ('Jović') und gespeicherte DB-Einträge ('Jovic')
+    unterschiedlich geschrieben sein können.
+    """
+    if not name:
+        return None
+    exact = get_player(name)
+    if exact:
+        return exact
+    try:
+        target = normalize_name(name)
+        with get_connection() as conn:
+            rows = conn.execute(text("SELECT * FROM players;")).mappings().all()
+            for row in rows:
+                if normalize_name(row["name"]) == target:
+                    return dict(row)
+                if names_match(row["name"], name):
+                    return dict(row)
+        return None
+    except SQLAlchemyError as exc:
+        log.error("find_player(%s) fehlgeschlagen: %s", name, exc)
         return None
 
 

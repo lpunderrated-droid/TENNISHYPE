@@ -20,6 +20,7 @@ import config
 import data_fetcher
 import database
 from elo_calculator import expected_score, ranking_to_elo
+from player_utils import lookup_ranking, names_match, normalize_name
 
 log = config.log
 
@@ -38,10 +39,10 @@ def _surface_elo(player: dict | None, surface: str, fallback: float) -> float:
 
 def elo_probability(player1: str, player2: str, surface: str, rankings: dict[str, int]) -> float:
     """Schicht 1: Siegwahrscheinlichkeit von player1 anhand der Oberflächen-Elo."""
-    p1 = database.get_player(player1)
-    p2 = database.get_player(player2)
-    fb1 = ranking_to_elo(rankings.get(player1.strip().lower()))
-    fb2 = ranking_to_elo(rankings.get(player2.strip().lower()))
+    p1 = database.find_player(player1)
+    p2 = database.find_player(player2)
+    fb1 = ranking_to_elo(lookup_ranking(player1, rankings))
+    fb2 = ranking_to_elo(lookup_ranking(player2, rankings))
     elo1 = _surface_elo(p1, surface, fb1)
     elo2 = _surface_elo(p2, surface, fb2)
     return expected_score(elo1, elo2)
@@ -141,15 +142,15 @@ def h2h_probability(h2h: list[dict] | None, player1: str) -> Optional[float]:
     if not h2h or len(h2h) < config.H2H_MIN_MATCHES:
         return None
     letzte = h2h[: config.H2H_LETZTE_N]
-    name1 = player1.strip().lower()
+    name1 = normalize_name(player1)
     gewicht_summe = 0.0
     p1_summe = 0.0
     for n, m in enumerate(letzte):
-        gewinner = str(m.get("event_winner", m.get("winner", ""))).strip().lower()
+        raw_winner = str(m.get("event_winner", m.get("winner", "")))
         gewicht = config.H2H_DECAY ** n
         gewicht_summe += gewicht
         # event_winner ist bei API-Tennis oft "First Player" / "Second Player"
-        if gewinner in (name1, "first player"):
+        if raw_winner.strip().lower() == "first player" or names_match(raw_winner, player1):
             p1_summe += gewicht
     if gewicht_summe == 0:
         return None
@@ -192,8 +193,8 @@ def _ensure_player(name: str, rankings: dict[str, int]) -> None:
     """Legt einen Spieler mit ranking-basierter Start-Elo an, falls unbekannt."""
     if not name:
         return None
-    if database.get_player(name) is None:
-        elo = ranking_to_elo(rankings.get(name.strip().lower()))
+    if database.find_player(name) is None:
+        elo = ranking_to_elo(lookup_ranking(name, rankings))
         database.upsert_player(name, clay_elo=elo, hard_elo=elo, grass_elo=elo)
     return None
 
@@ -330,13 +331,13 @@ def auto_settle() -> int:
         return 0
 
     def norm(name: str | None) -> str:
-        return (name or "").strip().lower()
+        return normalize_name(name)
 
-    # Nachschlage-Index: Spielerpaar -> Gewinnername (Reihenfolge-unabhängig)
+    # Nachschlage-Index: Spielerpaar -> Gewinner (Originalname aus API)
     lookup: dict[frozenset, str] = {}
     for r in ergebnisse:
         paar = frozenset({norm(r.get("player1")), norm(r.get("player2"))})
-        lookup[paar] = norm(r.get("winner"))
+        lookup[paar] = r.get("winner") or ""
 
     abgerechnet = 0
     for p in offene:
@@ -344,7 +345,7 @@ def auto_settle() -> int:
         gewinner = lookup.get(paar)
         if not gewinner:
             continue
-        gewonnen = (gewinner == norm(p.get("tip")))
+        gewonnen = names_match(p.get("tip"), gewinner)
         if database.update_prediction_result(p["id"], gewonnen):
             abgerechnet += 1
 
