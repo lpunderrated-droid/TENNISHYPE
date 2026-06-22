@@ -124,7 +124,7 @@ FIXTURES_CHALLENGER_HISTORY_DAYS = 60  # Challenger in einem Abruf (90+ Tage →
 # API-Tennis event_type_key: ATP/WTA in einem Abruf; Challenger separat (60 Tage)
 FIXTURES_EVENT_TYPES_TOUR = ("265", "266")  # Atp Singles, Wta Singles
 FIXTURES_EVENT_TYPES_CHALLENGER = ("281", "272")  # Challenger Men/Women Singles
-FIXTURES_HISTORY_CACHE_VERSION = "v3"  # Cache-Bust bei Änderungen an der Fixture-Logik
+FIXTURES_HISTORY_CACHE_VERSION = "v4"  # Cache-Bust bei Änderungen an der Fixture-Logik
 
 # --- Netzwerk ---
 API_TIMEOUT = 15      # Sekunden pro Request

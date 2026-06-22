@@ -47,11 +47,15 @@ def names_match(a: str | None, b: str | None) -> bool:
 def matches_player_name(a: str | None, b: str | None) -> bool:
     """True, wenn zwei Namen derselbe Spieler sind (voller Name, Abkürzung, Akzente).
 
-    Deckt z. B. 'Francisco Comesana' vs 'F. Comesana' ab (Nachname + Anfangsbuchstabe).
+    Deckt z. B. ab:
+      - 'Francisco Comesana' vs 'F. Comesana' (Nachname + Anfangsbuchstabe)
+      - 'Bu Yunchaokete' vs 'Y. Bu' (Initial + Familienname, Reihenfolge egal)
     """
     if not a or not b:
         return False
     if names_match(a, b):
+        return True
+    if _matches_initial_surname(a, b) or _matches_initial_surname(b, a):
         return True
     ta = normalize_name(a).split()
     tb = normalize_name(b).split()
@@ -60,6 +64,21 @@ def matches_player_name(a: str | None, b: str | None) -> bool:
     if ta[-1] != tb[-1]:
         return False
     return ta[0][0] == tb[0][0]
+
+
+def _matches_initial_surname(full_name: str, abbrev_name: str) -> bool:
+    """Erkennt Kurzformen wie 'Y. Bu' für 'Bu Yunchaokete' / 'Yunchaokete Bu'."""
+    tokens_full = normalize_name(full_name).split()
+    tokens_abbr = normalize_name(abbrev_name).split()
+    if len(tokens_abbr) != 2 or len(tokens_abbr[0]) > 2:
+        return False
+    initial = tokens_abbr[0].rstrip(".")
+    if len(initial) != 1:
+        return False
+    family = tokens_abbr[1]
+    if family not in tokens_full:
+        return False
+    return any(tok != family and tok[0] == initial for tok in tokens_full)
 
 
 def _build_ranking_index(rankings: dict[str, int]) -> tuple[dict[str, int], dict[frozenset[str], int]]:
