@@ -29,6 +29,14 @@ def _combi_stake(c: dict) -> float:
     return float(c.get("einsatz") or config.COMBI_EINSATZ_DEFAULT)
 
 
+def _tip_hit_stats(predictions: list[dict]) -> tuple[float, int, int]:
+    """Trefferquote auf Tipp-Ebene: jeder abgerechnete Tipp zählt (inkl. Kombi-Legs)."""
+    settled = [p for p in predictions if p["status"] in ("gewonnen", "verloren")]
+    won = [p for p in settled if p["status"] == "gewonnen"]
+    rate = (len(won) / len(settled) * 100) if settled else 0.0
+    return rate, len(won), len(settled)
+
+
 def _today_betting_stats(tips: list[dict], date_str: str) -> dict:
     """KPIs für Heutige Tipps: Einzel + Kombis ohne Doppelzählung."""
     combis_today = database.get_combis_by_date(date_str)
@@ -699,10 +707,9 @@ def render_tracking_page() -> None:
 
     alle_combis = database.get_all_combis()
     singles = database.get_single_predictions_for_tracking()
+    all_predictions = database.get_all_predictions()
     settled_singles = [p for p in singles if p["status"] in ("gewonnen", "verloren")]
     settled_combis = [c for c in alle_combis if c["status"] in ("gewonnen", "verloren")]
-    gewonnen_s = [p for p in settled_singles if p["status"] == "gewonnen"]
-    gewonnen_c = [c for c in settled_combis if c["status"] == "gewonnen"]
 
     gesamt_einsatz = sum(float(p.get("einsatz") or config.EINSATZ) for p in singles) + sum(
         _combi_stake(c) for c in alle_combis
@@ -713,10 +720,8 @@ def render_tracking_page() -> None:
     settled_einsatz = sum(float(p.get("einsatz") or config.EINSATZ) for p in settled_singles) + sum(
         _combi_stake(c) for c in settled_combis
     )
-    settled_count = len(settled_singles) + len(settled_combis)
-    gewonnen_count = len(gewonnen_s) + len(gewonnen_c)
     roi = (gesamt_pnl / settled_einsatz * 100) if settled_einsatz > 0 else 0.0
-    trefferquote = (gewonnen_count / settled_count * 100) if settled_count else 0.0
+    trefferquote, gewonnen_tips, settled_tips = _tip_hit_stats(all_predictions)
 
     pnl_tone = "green" if gesamt_pnl > 0 else ("red" if gesamt_pnl < 0 else "")
     roi_tone = "green" if roi > 0 else ("red" if roi < 0 else "")
@@ -727,7 +732,7 @@ def render_tracking_page() -> None:
             {"lbl": "Gewinn / Verlust", "val": f"{gesamt_pnl:+.2f} €", "tone": pnl_tone},
             {"lbl": "ROI", "val": f"{roi:+.1f} %", "tone": roi_tone},
             {"lbl": "Trefferquote", "val": f"{trefferquote:.1f} %",
-             "sub": f"{gewonnen_count}/{settled_count} settled"},
+             "sub": f"{gewonnen_tips}/{settled_tips} Tipps korrekt"},
         ]),
         unsafe_allow_html=True,
     )
@@ -745,7 +750,10 @@ def render_tracking_page() -> None:
          "confidence": None, "tip": combi.format_legs_summary(c.get("legs") or [])}
         for c in settled_combis
     ]
-    _render_charts(settled_for_charts)
+    settled_tips_for_chart = [
+        p for p in all_predictions if p["status"] in ("gewonnen", "verloren")
+    ]
+    _render_charts(settled_for_charts, settled_tips_for_chart)
     return None
 
 
@@ -870,14 +878,14 @@ def _render_table(alle: list[dict]) -> None:
     return None
 
 
-def _render_charts(settled: list[dict]) -> None:
+def _render_charts(settled_bets: list[dict], settled_tips: list[dict] | None = None) -> None:
     """Rendert die drei Plotly-Charts mit Fallbacks. Gibt None zurück."""
     st.markdown("<div class='tg-section'>Auswertung</div>", unsafe_allow_html=True)
-    if not settled:
+    if not settled_bets and not settled_tips:
         st.info("Sobald Ergebnisse eingetragen sind, erscheinen hier Charts.")
         return None
 
-    df = pd.DataFrame(settled)
+    df = pd.DataFrame(settled_bets)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values("date")
 
@@ -897,16 +905,18 @@ def _render_charts(settled: list[dict]) -> None:
             _style_fig(fig)
             st.plotly_chart(fig, use_container_width=True)
 
-    # Chart 2: Trefferquote pro Monat
+    # Chart 2: Trefferquote pro Monat (Tipp-Ebene, inkl. Kombi-Legs)
     with c2:
         st.markdown("**Trefferquote pro Monat**")
-        if df.empty:
+        tips_df = pd.DataFrame(settled_tips or [])
+        if tips_df.empty:
             st.info("Keine Daten.")
         else:
-            tmp = df.copy()
-            tmp["monat"] = tmp["date"].dt.strftime("%Y-%m")
-            tmp["gewonnen"] = (tmp["status"] == "gewonnen").astype(int)
-            grp = tmp.groupby("monat").agg(quote=("gewonnen", "mean")).reset_index()
+            tips_df["date"] = pd.to_datetime(tips_df["date"], errors="coerce")
+            tips_df = tips_df.dropna(subset=["date"])
+            tips_df["monat"] = tips_df["date"].dt.strftime("%Y-%m")
+            tips_df["gewonnen"] = (tips_df["status"] == "gewonnen").astype(int)
+            grp = tips_df.groupby("monat").agg(quote=("gewonnen", "mean")).reset_index()
             grp["quote"] = grp["quote"] * 100
             fig = px.bar(grp, x="monat", y="quote",
                          labels={"monat": "Monat", "quote": "Trefferquote %"})
