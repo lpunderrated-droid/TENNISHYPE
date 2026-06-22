@@ -74,6 +74,12 @@ section[data-testid="stSidebar"] { background: #0d1116; border-right: 1px solid 
 .pstat .form-good { color:var(--green); }
 .pstat .form-mid { color:var(--yellow); }
 .pstat .form-bad { color:var(--red); }
+.form-strip { display:inline-flex; gap:3px; flex-wrap:wrap; }
+.form-char { font-size:10px; font-weight:800; width:18px; height:18px; line-height:18px;
+  text-align:center; border-radius:4px; display:inline-block; }
+.form-w { background:rgba(14,203,129,.15); color:var(--green); border:1px solid rgba(14,203,129,.35); }
+.form-l { background:rgba(246,70,57,.12); color:var(--red); border:1px solid rgba(246,70,57,.35); }
+.form-empty { color:var(--muted); font-size:10px; }
 .matchup .loser { color:var(--text); opacity:.65; }
 .meta { color:var(--muted); font-size:12px; margin-top:5px; display:flex; gap:8px; flex-wrap:wrap; }
 .chip { background:var(--panel2); border:1px solid var(--border); border-radius:999px;
@@ -144,6 +150,7 @@ hr { border-color:var(--border); }
   .matchup { font-size:14px; }
   .matchup .player-line { margin:4px 0; }
   .pstat { font-size:10px; }
+  .form-char { width:16px; height:16px; line-height:16px; font-size:9px; }
   .meta { gap:5px; margin-top:4px; }
   .chip { font-size:10px; padding:2px 7px; max-width:100%; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
@@ -319,31 +326,25 @@ def load_player_context(_cache_key: str, player_names: tuple[str, ...]) -> dict:
         return {"rankings": {}, "histories": {}}
 
 
-def _form_class(score: float | None) -> str:
-    """CSS-Klasse für Form-Färbung (grün/gelb/rot)."""
-    if score is None:
-        return ""
-    if score >= 0.6:
-        return "form-good"
-    if score >= 0.4:
-        return "form-mid"
-    return "form-bad"
+def _form_strip_html(hist: list[dict]) -> str:
+    """Letzte 10 Spiele als W/L-Kette (neuestes Ergebnis links)."""
+    letzte = hist[: config.FORM_LETZTE_N]
+    if not letzte:
+        return "<span class='form-empty'>Keine Form-Daten</span>"
+    chars = []
+    for m in letzte:
+        cls = "form-w" if m.get("won") else "form-l"
+        letter = "W" if m.get("won") else "L"
+        chars.append(f"<span class='form-char {cls}'>{letter}</span>")
+    return f"<span class='form-strip'>{''.join(chars)}</span>"
 
 
 def _player_stats_html(name: str, rankings: dict, histories: dict) -> str:
-    """Baut Rank + Form-Zeile unter dem Spielernamen. Gibt HTML zurück."""
+    """Baut Rank + W/L-Form der letzten 10 Spiele unter dem Spielernamen."""
     rank = lookup_ranking(name, rankings)
     rank_html = f"<span class='rank'>#{rank}</span>" if rank else "<span class='rank'>#—</span>"
-
     hist = histories.get(name, [])
-    form = match_analyzer.player_form_score(hist)
-    if form is not None:
-        form_html = f"<span class='{_form_class(form)}'>Form {form:.0%}</span>"
-        if hist:
-            form_html += f"<span style='color:var(--muted);font-weight:400'>({min(len(hist), config.FORM_LETZTE_N)} Sp.)</span>"
-    else:
-        form_html = "<span>Form —</span>"
-
+    form_html = _form_strip_html(hist)
     return f"<div class='pstat'>{rank_html}<span>·</span>{form_html}</div>"
 
 
