@@ -151,14 +151,28 @@ def check_login() -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Daten-Lade-Hilfen (täglich gecacht, kein Re-Fetch pro Refresh)
+# Daten-Lade-Hilfen
 # --------------------------------------------------------------------------- #
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_today_tips(_cache_key: str) -> list[dict]:
-    """Lädt/berechnet die heutigen Tipps. _cache_key (Datum) steuert den Cache."""
+@st.cache_data(ttl=86400, show_spinner=False)
+def _ensure_today_tips_generated(_date: str) -> bool:
+    """Generiert Tipps für den Tag nur einmal (wenn DB leer). Gibt True zurück."""
     try:
-        return match_analyzer.generate_top_tips()
-    except Exception as exc:  # bewusst breit: UI darf nie crashen
+        if database.get_predictions_by_date(_date):
+            return True
+        match_analyzer.generate_top_tips()
+        return True
+    except Exception as exc:
+        log.error("_ensure_today_tips_generated fehlgeschlagen: %s", exc)
+        return False
+
+
+def load_today_tips() -> list[dict]:
+    """Lädt heutige Tipps immer frisch aus der DB (kein Stale-Cache der Tipps selbst)."""
+    heute = datetime.now().strftime("%Y-%m-%d")
+    _ensure_today_tips_generated(heute)
+    try:
+        return database.get_predictions_by_date(heute)
+    except Exception as exc:
         log.error("load_today_tips fehlgeschlagen: %s", exc)
         return []
 
@@ -195,10 +209,11 @@ def render_tips_page() -> None:
     col_btn, _ = st.columns([1, 5])
     with col_btn:
         if st.button("🔄 Tipps neu laden"):
-            load_today_tips.clear()
+            _ensure_today_tips_generated.clear()
+            st.rerun()
 
-    with st.spinner("Analysiere heutige Matches …"):
-        tips = load_today_tips(datetime.now().strftime("%Y-%m-%d"))
+    with st.spinner("Lade heutige Tipps …"):
+        tips = load_today_tips()
 
     gesamt_einsatz = len(tips) * config.EINSATZ
     offene = sum(1 for t in tips if t["status"] == "offen")
