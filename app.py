@@ -323,7 +323,7 @@ def render_tracking_page() -> None:
         unsafe_allow_html=True,
     )
 
-    _render_result_sidebar()
+    _render_manual_fallback()
 
     st.divider()
     _render_table(alle)
@@ -332,32 +332,36 @@ def render_tracking_page() -> None:
     return None
 
 
-def _render_result_sidebar() -> None:
-    """Sidebar-Formular zum Eintragen von Ergebnissen. Gibt None zurück."""
-    st.sidebar.divider()
-    st.sidebar.subheader("✍️ Ergebnis eintragen")
+def _render_manual_fallback() -> None:
+    """Eingeklappter Fallback, falls ein Ergebnis nicht automatisch abgerechnet wurde.
 
+    Normalerweise erledigt die automatische Abrechnung alles; dies fängt nur
+    seltene Fälle ab (z. B. abweichende Spieler-Schreibweise). Gibt None zurück.
+    """
     offene = database.get_open_predictions()
     if not offene:
-        st.sidebar.info("Keine offenen Tipps.")
         return None
 
-    optionen = {
-        f"{p['date']} | {p['tip']} ({p['player1']} vs {p['player2']})": p["id"]
-        for p in offene
-    }
-    auswahl = st.sidebar.selectbox("Offenen Tipp wählen", list(optionen.keys()))
-    ergebnis = st.sidebar.radio("Ergebnis", ["Gewonnen", "Verloren"], horizontal=True)
-
-    if st.sidebar.button("💾 Ergebnis speichern"):
-        pred_id = optionen[auswahl]
-        ok = database.update_prediction_result(pred_id, gewonnen=(ergebnis == "Gewonnen"))
-        if ok:
-            database.update_bankroll_history()
-            st.sidebar.success("Ergebnis gespeichert.")
-            st.rerun()
-        else:
-            st.sidebar.error("Speichern fehlgeschlagen – siehe Log.")
+    with st.expander(f"🛠️ Ergebnis manuell eintragen (Fallback) · {len(offene)} offen"):
+        st.caption(
+            "Wird normalerweise automatisch erledigt. Nutze dies nur, wenn ein Tipp "
+            "trotz beendetem Match offen bleibt (z. B. abweichende Schreibweise)."
+        )
+        optionen = {
+            f"{p['date']} | {p['tip']} ({p['player1']} vs {p['player2']})": p["id"]
+            for p in offene
+        }
+        auswahl = st.selectbox("Offenen Tipp wählen", list(optionen.keys()))
+        ergebnis = st.radio("Ergebnis", ["Gewonnen", "Verloren"], horizontal=True)
+        if st.button("💾 Ergebnis speichern"):
+            pred_id = optionen[auswahl]
+            ok = database.update_prediction_result(pred_id, gewonnen=(ergebnis == "Gewonnen"))
+            if ok:
+                database.update_bankroll_history()
+                st.success("Ergebnis gespeichert.")
+                st.rerun()
+            else:
+                st.error("Speichern fehlgeschlagen – siehe Log.")
     return None
 
 
