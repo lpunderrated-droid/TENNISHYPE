@@ -101,6 +101,62 @@ section[data-testid="stSidebar"] { background: #0d1116; border-right: 1px solid 
   border-radius:10px; font-weight:600; }
 .stButton>button:hover { border-color:var(--green); color:var(--green); }
 hr { border-color:var(--border); }
+
+/* Login */
+.login-box { max-width:420px; margin:2rem auto 0; padding:24px 22px;
+  background:var(--panel); border:1px solid var(--border); border-radius:14px; }
+
+/* ===== Tablet (<=768px) ===== */
+@media (max-width:768px) {
+  .block-container { padding-top:1rem; padding-left:1rem; padding-right:1rem; max-width:100%; }
+  .tg-header { flex-direction:column; align-items:flex-start; gap:10px; padding:12px 14px; }
+  .tg-tiles { grid-template-columns:repeat(2,1fr); gap:8px; }
+  .tg-tile .val { font-size:20px; }
+  .tcard-top { flex-direction:column; gap:8px; }
+  .tgrid { grid-template-columns:repeat(2,1fr); gap:8px; }
+  .matchup { font-size:16px; line-height:1.35; }
+  .confhead { flex-direction:column; align-items:flex-start; gap:4px; }
+  div[data-testid="stHorizontalBlock"] { flex-wrap:wrap; gap:0.5rem; }
+  [data-testid="stDataFrame"] { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+}
+
+/* ===== Smartphone (<=480px) ===== */
+@media (max-width:480px) {
+  .block-container { padding-top:0.6rem; padding-left:0.65rem; padding-right:0.65rem; padding-bottom:2rem; }
+  .tg-logo { font-size:18px; }
+  .tg-sub { font-size:11px; }
+  .tg-tiles { grid-template-columns:repeat(2,1fr); gap:6px; margin-bottom:12px; }
+  .tg-tile { padding:10px 11px; border-radius:10px; }
+  .tg-tile .lbl { font-size:9px; letter-spacing:.4px; }
+  .tg-tile .val { font-size:17px; }
+  .tg-tile .sub { font-size:10px; }
+  .tcard { padding:12px; border-radius:12px; margin-bottom:10px; }
+  .tcard:hover { transform:none; }
+  .matchup { font-size:14px; }
+  .matchup .vs { display:inline-block; margin:0 5px; font-size:11px; }
+  .meta { gap:5px; margin-top:4px; }
+  .chip { font-size:10px; padding:2px 7px; max-width:100%; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .pill { font-size:10px; padding:3px 10px; align-self:flex-start; }
+  .tgrid { grid-template-columns:1fr 1fr; gap:6px; }
+  .cell { padding:8px 10px; border-radius:8px; }
+  .cell .k { font-size:9px; }
+  .cell .v { font-size:15px; }
+  .cell .v.tip { font-size:12px; line-height:1.25; word-break:break-word; }
+  .cell .v.warn { font-size:12px; }
+  .confwrap { margin-top:10px; }
+  .confhead { font-size:10px; }
+  .confbar { height:7px; }
+  .tg-empty { padding:22px 16px; }
+  .tg-empty .big { font-size:28px; }
+  .tg-empty .h { font-size:15px; }
+  .tg-section { font-size:11px; margin-bottom:8px; }
+  .login-box { margin-top:1rem; padding:18px 16px; }
+  /* Filter-Radios untereinander statt nebeneinander */
+  div[role="radiogroup"] { flex-direction:column !important; align-items:flex-start !important; gap:6px !important; }
+  div[role="radiogroup"] label { margin-right:0 !important; }
+  .stButton>button { width:100%; }
+}
 """
 
 
@@ -137,7 +193,12 @@ def check_login() -> bool:
     if st.session_state.get("auth_ok"):
         return True
 
-    st.title("🎾 Tennis Tipp-Analyse")
+    st.markdown(
+        "<div class='tg-header'><div class='tg-brand'><div>"
+        "<div class='tg-logo'>TENNIS<span class='accent'>HYPE</span></div>"
+        "<div class='tg-sub'>Secure Access</div></div></div></div>",
+        unsafe_allow_html=True,
+    )
     st.markdown("#### 🔒 Bitte anmelden")
     pw = st.text_input("Passwort", type="password", key="login_pw")
     if st.button("Anmelden"):
@@ -206,9 +267,9 @@ def render_tips_page() -> None:
         unsafe_allow_html=True,
     )
 
-    col_btn, _ = st.columns([1, 5])
+    col_btn, col_sp = st.columns([1, 3])
     with col_btn:
-        if st.button("🔄 Tipps neu laden"):
+        if st.button("🔄 Tipps neu laden", use_container_width=True):
             _ensure_today_tips_generated.clear()
             st.rerun()
 
@@ -387,8 +448,11 @@ def _render_table(alle: list[dict]) -> None:
         st.info("Noch keine Tipps vorhanden.")
         return None
 
-    filter_wahl = st.radio(
-        "Filter", ["Alle", "Nur Gewonnen", "Nur Verloren", "Nur Offen"], horizontal=True
+    st.markdown("<div class='tg-section' style='margin-bottom:4px'>Filter</div>", unsafe_allow_html=True)
+    filter_wahl = st.selectbox(
+        "Filter",
+        ["Alle", "Nur Gewonnen", "Nur Verloren", "Nur Offen"],
+        label_visibility="collapsed",
     )
     status_map = {"Nur Gewonnen": "gewonnen", "Nur Verloren": "verloren", "Nur Offen": "offen"}
     daten = alle if filter_wahl == "Alle" else [p for p in alle if p["status"] == status_map[filter_wahl]]
