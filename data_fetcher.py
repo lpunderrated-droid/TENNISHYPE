@@ -586,11 +586,11 @@ def fetch_player_fixtures_by_key(player_key: str) -> list[dict]:
     if not config.API_TENNIS_KEY or not player_key:
         return []
 
-    cache = _read_cache(f"player_fix_{player_key}")
+    cache = _read_cache(f"player_fix_{player_key}_{config.FIXTURES_PLAYER_KEY_HISTORY_DAYS}d")
     if cache is not None:
         return cache
 
-    start = (datetime.now() - timedelta(days=config.FIXTURES_HISTORY_DAYS)).strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=config.FIXTURES_PLAYER_KEY_HISTORY_DAYS)).strftime("%Y-%m-%d")
     end = datetime.now().strftime("%Y-%m-%d")
     data = _get(
         config.API_TENNIS_BASE,
@@ -612,7 +612,7 @@ def fetch_player_fixtures_by_key(player_key: str) -> list[dict]:
                     rows.append(row)
 
     rows.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
-    _write_cache(f"player_fix_{player_key}", rows)
+    _write_cache(f"player_fix_{player_key}_{config.FIXTURES_PLAYER_KEY_HISTORY_DAYS}d", rows)
     return rows
 
 

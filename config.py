@@ -119,12 +119,13 @@ H2H_MIN_MATCHES = 2   # nur werten ab 2 vorhandenen H2H-Matches
 H2H_DECAY = 0.9
 
 # --- Form / Match-Historie ---
-FIXTURES_HISTORY_DAYS = 120  # wie weit zurück get_fixtures für Form + Oberfläche laden
+FIXTURES_HISTORY_DAYS = 120  # Bulk-Fixtures (ATP/WTA/Challenger) für Form + Oberfläche
+FIXTURES_PLAYER_KEY_HISTORY_DAYS = 180  # player_key-Abruf tiefer (mehr Spiele für Top-Spieler)
 FIXTURES_CHALLENGER_HISTORY_DAYS = 60  # Challenger in einem Abruf (90+ Tage → HTTP 500)
 # API-Tennis event_type_key: ATP/WTA in einem Abruf; Challenger separat (60 Tage)
 FIXTURES_EVENT_TYPES_TOUR = ("265", "266")  # Atp Singles, Wta Singles
 FIXTURES_EVENT_TYPES_CHALLENGER = ("281", "272")  # Challenger Men/Women Singles
-FIXTURES_HISTORY_CACHE_VERSION = "v4"  # Cache-Bust bei Änderungen an der Fixture-Logik
+FIXTURES_HISTORY_CACHE_VERSION = "v5"  # Cache-Bust bei Änderungen an der Fixture-Logik
 
 # --- Netzwerk ---
 API_TIMEOUT = 15      # Sekunden pro Request
