@@ -482,8 +482,6 @@ def _render_combi_section(tips: list[dict], date_str: str, in_combis: set[int]) 
                 f"Mindestens {config.COMBI_MIN_LEGS} Legs · Einsatz {config.EINSATZ:.0f} € · "
                 "Legs in Kombis zählen nicht als Einzelwette im Tracking."
             )
-
-    _render_combi_manual_fallback(combis)
     return None
 
 
