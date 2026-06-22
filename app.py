@@ -24,6 +24,11 @@ log = config.log
 st.set_page_config(page_title="TENNISHYPE Terminal", page_icon="🎾", layout="wide")
 
 
+def _combi_stake(c: dict) -> float:
+    """Einsatz einer Kombiwette (Fallback auf Standard)."""
+    return float(c.get("einsatz") or config.COMBI_EINSATZ_DEFAULT)
+
+
 # --------------------------------------------------------------------------- #
 # Design: dunkles "Börsen"-Theme via Custom-CSS
 # --------------------------------------------------------------------------- #
@@ -454,14 +459,24 @@ def _render_combi_section(tips: list[dict], date_str: str, in_combis: set[int]) 
         t for t in selectable
         if st.session_state.get(f"combi_pick_{t.get('id')}", False)
     ]
+
+    combi_stake = st.number_input(
+        "Einsatz Kombi (€)",
+        min_value=1.0,
+        max_value=10000.0,
+        value=float(config.COMBI_EINSATZ_DEFAULT),
+        step=1.0,
+        key="combi_stake_input",
+    )
+
     if selected:
         combined = combi.combined_odds(selected)
-        payout = combined * config.EINSATZ - config.EINSATZ if combined > 1 else 0
+        payout = combi.combi_payout(combined, combi_stake)
         legs_txt = " · ".join(html.escape(t.get("tip") or "?") for t in selected)
         st.markdown(
             f"<div class='combi-builder'>"
             f"<b>{len(selected)} Legs ausgewählt</b> · Kombi-Quote <span class='odds'>{combined:.2f}</span> "
-            f"· Gewinn bei 10 €: <span style='color:var(--green)'>+{payout:.2f} €</span>"
+            f"· Einsatz <b>{combi_stake:.2f} €</b> · Gewinn: <span style='color:var(--green)'>+{payout:.2f} €</span>"
             f"<div class='legs'>{legs_txt}</div></div>",
             unsafe_allow_html=True,
         )
@@ -469,7 +484,7 @@ def _render_combi_section(tips: list[dict], date_str: str, in_combis: set[int]) 
     col_a, col_b = st.columns([1, 3])
     with col_a:
         if st.button("🎰 Kombi spielen", use_container_width=True, disabled=len(selected) < config.COMBI_MIN_LEGS):
-            ok, msg = database.create_combi([int(t["id"]) for t in selected], date_str)
+            ok, msg = database.create_combi([int(t["id"]) for t in selected], date_str, einsatz=combi_stake)
             if ok:
                 database.update_bankroll_history()
                 st.success(msg)
@@ -479,7 +494,7 @@ def _render_combi_section(tips: list[dict], date_str: str, in_combis: set[int]) 
     with col_b:
         if selected:
             st.caption(
-                f"Mindestens {config.COMBI_MIN_LEGS} Legs · Einsatz {config.EINSATZ:.0f} € · "
+                f"Mindestens {config.COMBI_MIN_LEGS} Legs · Einsatz frei wählbar · "
                 "Legs in Kombis zählen nicht als Einzelwette im Tracking."
             )
     return None
@@ -489,7 +504,7 @@ def _combi_option_label(c: dict) -> str:
     """Anzeigetext für Kombi-Auswahl in Dropdowns."""
     legs = c.get("legs") or []
     tips = " + ".join(leg.get("tip") or "?" for leg in legs)
-    return f"{c.get('date')} | {len(legs)} Legs @ {c.get('combined_odds', 0):.2f} ({tips})"
+    return f"{c.get('date')} | {c.get('einsatz', config.COMBI_EINSATZ_DEFAULT):.0f} € · {len(legs)} Legs @ {c.get('combined_odds', 0):.2f} ({tips})"
 
 
 def _render_combi_manual_fallback(combis: list[dict] | None = None) -> None:
@@ -551,7 +566,8 @@ def _combi_card_html(c: dict) -> str:
 
     return (
         f"<div class='combi-card'><div class='head'>"
-        f"<span><b>Kombi</b> · {len(legs)} Legs · Quote <span class='odds'>{c.get('combined_odds', 0):.2f}</span>"
+        f"<span><b>Kombi</b> · {len(legs)} Legs · {float(c.get('einsatz') or config.COMBI_EINSATZ_DEFAULT):.2f} € · "
+        f"Quote <span class='odds'>{c.get('combined_odds', 0):.2f}</span>"
         f"{pnl_html}</span>"
         f"<span class='pill {pill[0]}'>{pill[1]}</span></div>"
         f"<div class='legs'>{legs_html}</div></div>"
@@ -637,13 +653,17 @@ def render_tracking_page() -> None:
     gewonnen_s = [p for p in settled_singles if p["status"] == "gewonnen"]
     gewonnen_c = [c for c in settled_combis if c["status"] == "gewonnen"]
 
-    gesamt_einsatz = len(singles) * config.EINSATZ + len(alle_combis) * config.EINSATZ
+    gesamt_einsatz = sum(float(p.get("einsatz") or config.EINSATZ) for p in singles) + sum(
+        _combi_stake(c) for c in alle_combis
+    )
     gesamt_pnl = sum(p["gewinn_verlust"] for p in settled_singles) + sum(
         c["gewinn_verlust"] for c in settled_combis
     )
+    settled_einsatz = sum(float(p.get("einsatz") or config.EINSATZ) for p in settled_singles) + sum(
+        _combi_stake(c) for c in settled_combis
+    )
     settled_count = len(settled_singles) + len(settled_combis)
     gewonnen_count = len(gewonnen_s) + len(gewonnen_c)
-    settled_einsatz = settled_count * config.EINSATZ
     roi = (gesamt_pnl / settled_einsatz * 100) if settled_einsatz > 0 else 0.0
     trefferquote = (gewonnen_count / settled_count * 100) if settled_count else 0.0
 
@@ -693,7 +713,7 @@ def _render_combi_table(combis: list[dict]) -> None:
             "Legs": len(legs),
             "Spiele": combi.format_legs_summary(legs),
             "Quote": c.get("combined_odds"),
-            "Einsatz €": c.get("einsatz") or config.EINSATZ,
+            "Einsatz €": _combi_stake(c),
             "G/V €": c.get("gewinn_verlust") or 0.0,
             "Status": status_badge(c.get("status") or "offen"),
         })

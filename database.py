@@ -525,7 +525,8 @@ def _refresh_combi(conn, combi_id: int) -> None:
         return
 
     legs = _fetch_combi_legs(conn, combi_id)
-    status, pnl = combi.evaluate_combi(legs, float(combi_row["combined_odds"]))
+    stake = float(combi_row["einsatz"] or config.COMBI_EINSATZ_DEFAULT)
+    status, pnl = combi.evaluate_combi(legs, float(combi_row["combined_odds"]), stake)
     eingetragen = datetime.now().isoformat(timespec="seconds") if status != "offen" else None
     conn.execute(
         text("""
@@ -537,13 +538,21 @@ def _refresh_combi(conn, combi_id: int) -> None:
     )
 
 
-def create_combi(prediction_ids: list[int], date_str: str) -> tuple[bool, str]:
+def create_combi(
+    prediction_ids: list[int],
+    date_str: str,
+    einsatz: float | None = None,
+) -> tuple[bool, str]:
     """Legt eine Kombiwette an. Returns (ok, message)."""
     ids = list(dict.fromkeys(prediction_ids))
     if len(ids) < config.COMBI_MIN_LEGS:
         return False, f"Mindestens {config.COMBI_MIN_LEGS} Legs nötig."
     if len(ids) > config.COMBI_MAX_LEGS:
         return False, f"Maximal {config.COMBI_MAX_LEGS} Legs pro Kombi."
+
+    stake = round(float(einsatz if einsatz is not None else config.COMBI_EINSATZ_DEFAULT), 2)
+    if stake <= 0:
+        return False, "Einsatz muss größer als 0 sein."
 
     try:
         with get_connection() as conn:
@@ -580,7 +589,7 @@ def create_combi(prediction_ids: list[int], date_str: str) -> tuple[bool, str]:
                         INSERT INTO combis (date, einsatz, combined_odds, status, gewinn_verlust, created_at)
                         VALUES (:date, :einsatz, :odds, 'offen', 0.0, :now);
                     """),
-                    {"date": date_str, "einsatz": config.EINSATZ, "odds": combined, "now": now},
+                    {"date": date_str, "einsatz": stake, "odds": combined, "now": now},
                 )
                 combi_id = result.lastrowid
             else:
@@ -590,7 +599,7 @@ def create_combi(prediction_ids: list[int], date_str: str) -> tuple[bool, str]:
                         VALUES (:date, :einsatz, :odds, 'offen', 0.0, :now)
                         RETURNING id;
                     """),
-                    {"date": date_str, "einsatz": config.EINSATZ, "odds": combined, "now": now},
+                    {"date": date_str, "einsatz": stake, "odds": combined, "now": now},
                 ).mappings().first()
                 combi_id = int(row["id"])
 
@@ -604,8 +613,8 @@ def create_combi(prediction_ids: list[int], date_str: str) -> tuple[bool, str]:
                 )
 
             _refresh_combi(conn, combi_id)
-        log.info("Kombi #%s angelegt (%s Legs, Quote %.2f).", combi_id, len(ids), combined)
-        return True, f"Kombi gespeichert ({len(ids)} Legs · Quote {combined:.2f})."
+        log.info("Kombi #%s angelegt (%s Legs, Quote %.2f, Einsatz %.2f €).", combi_id, len(ids), combined, stake)
+        return True, f"Kombi gespeichert ({len(ids)} Legs · Quote {combined:.2f} · {stake:.2f} € Einsatz)."
     except SQLAlchemyError as exc:
         log.error("create_combi fehlgeschlagen: %s", exc)
         return False, "Speichern fehlgeschlagen – siehe Log."
@@ -675,7 +684,7 @@ def update_combi_result(combi_id: int, gewonnen: bool) -> bool:
                 log.warning("update_combi_result: Kombi %s nicht gefunden", combi_id)
                 return False
 
-            stake = float(row["einsatz"] or config.EINSATZ)
+            stake = float(row["einsatz"] or config.COMBI_EINSATZ_DEFAULT)
             combined = float(row["combined_odds"] or 0)
             now = datetime.now().isoformat(timespec="seconds")
 
