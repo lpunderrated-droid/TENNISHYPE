@@ -139,6 +139,14 @@ def init_db() -> None:
                     daily_pnl REAL
                 );
             """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS api_usage (
+                    period TEXT NOT NULL,
+                    api TEXT NOT NULL,
+                    count INTEGER DEFAULT 0,
+                    PRIMARY KEY (period, api)
+                );
+            """))
         log.info("Datenbank initialisiert (%s).", get_engine().dialect.name)
     except SQLAlchemyError as exc:
         log.error("init_db fehlgeschlagen: %s", exc)
@@ -397,3 +405,40 @@ def update_bankroll_history() -> None:
     except SQLAlchemyError as exc:
         log.error("update_bankroll_history fehlgeschlagen: %s", exc)
     return None
+
+
+# --------------------------------------------------------------------------- #
+# API-Nutzung (eigener Monatszähler, v. a. für API-Tennis)
+# --------------------------------------------------------------------------- #
+def increment_api_usage(api: str, period: str, n: int = 1) -> None:
+    """Erhöht den Aufruf-Zähler für eine API im angegebenen Monat. Gibt None zurück."""
+    if not api or not period:
+        return None
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO api_usage (period, api, count)
+                    VALUES (:period, :api, :n)
+                    ON CONFLICT(period, api) DO UPDATE SET
+                        count = api_usage.count + :n;
+                """),
+                {"period": period, "api": api, "n": n},
+            )
+    except SQLAlchemyError as exc:
+        log.error("increment_api_usage(%s) fehlgeschlagen: %s", api, exc)
+    return None
+
+
+def get_api_usage(api: str, period: str) -> int:
+    """Liest den Aufruf-Zähler einer API für einen Monat. Gibt 0 bei Fehler/leer."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                text("SELECT count FROM api_usage WHERE period = :period AND api = :api;"),
+                {"period": period, "api": api},
+            ).mappings().first()
+            return int(row["count"]) if row else 0
+    except SQLAlchemyError as exc:
+        log.error("get_api_usage(%s) fehlgeschlagen: %s", api, exc)
+        return 0

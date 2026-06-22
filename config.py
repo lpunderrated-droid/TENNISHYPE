@@ -122,6 +122,16 @@ H2H_DECAY = 0.9
 API_TIMEOUT = 15      # Sekunden pro Request
 API_MAX_RETRIES = 3   # maximal 3 Retry-Versuche
 
+# --- API-Kontingente (für Anzeige des verbleibenden Monatslimits) ---
+# The Odds API meldet das Restkontingent selbst im Header (kein Limit nötig).
+# API-Tennis liefert KEINE Quota-Info – daher zählen wir die Aufrufe selbst.
+# Das Monatslimit deines API-Tennis-Plans hier (oder per .env/Secret) setzen,
+# damit "verbleibend" berechnet werden kann. 0 = unbekannt (zeigt nur genutzt).
+try:
+    API_TENNIS_MONTHLY_LIMIT = int(get_secret("API_TENNIS_MONTHLY_LIMIT", "0") or "0")
+except (TypeError, ValueError):
+    API_TENNIS_MONTHLY_LIMIT = 0
+
 # --- Oberflächen-Erkennung anhand Turniernamen ---
 GRASS_KEYWORDS = ["wimbledon", "halle", "queen", "eastbourne", "stuttgart", "mallorca", "newport", "s-hertogenbosch"]
 CLAY_KEYWORDS = ["roland garros", "french open", "monte", "madrid", "rome", "roma", "barcelona", "hamburg",

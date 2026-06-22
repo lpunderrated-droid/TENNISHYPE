@@ -18,7 +18,12 @@ from typing import Optional
 import requests
 
 import config
+import database
 from player_utils import normalize_name
+
+# Zuletzt von The Odds API gemeldetes Kontingent (aus Response-Headern).
+# Wird bei jedem echten Odds-Aufruf aktualisiert.
+_odds_quota: dict[str, Optional[int]] = {"remaining": None, "used": None}
 
 log = config.log
 
@@ -67,12 +72,35 @@ def _get(url: str, params: dict) -> Optional[object]:
         try:
             resp = requests.get(url, params=params, timeout=config.API_TIMEOUT)
             if resp.status_code == 200:
+                _track_usage(url, resp)
                 return resp.json()
             log.warning("GET %s -> Status %s (Versuch %s)", url, resp.status_code, versuch)
         except (requests.RequestException, ValueError) as exc:
             log.warning("GET %s fehlgeschlagen (Versuch %s): %s", url, versuch, exc)
         time.sleep(min(2 ** versuch, 5))  # einfaches Backoff, klar begrenzt
     log.error("GET %s endgültig fehlgeschlagen nach %s Versuchen", url, config.API_MAX_RETRIES)
+    return None
+
+
+def _track_usage(url: str, resp: requests.Response) -> None:
+    """Erfasst das API-Kontingent nach einem erfolgreichen Aufruf. Gibt None zurück.
+
+    - The Odds API meldet das Restkontingent in den Headern -> direkt übernehmen.
+    - API-Tennis liefert keine Quota -> eigenen Monatszähler in der DB erhöhen.
+    """
+    try:
+        if url.startswith(config.ODDS_API_BASE):
+            rem = resp.headers.get("x-requests-remaining")
+            used = resp.headers.get("x-requests-used")
+            if rem is not None:
+                _odds_quota["remaining"] = int(float(rem))
+            if used is not None:
+                _odds_quota["used"] = int(float(used))
+        elif url.startswith(config.API_TENNIS_BASE):
+            period = datetime.now().strftime("%Y-%m")
+            database.increment_api_usage("api_tennis", period, 1)
+    except (ValueError, TypeError) as exc:
+        log.warning("Quota-Tracking fehlgeschlagen: %s", exc)
     return None
 
 
@@ -94,6 +122,36 @@ def infer_surface(tournament: str | None) -> str:
 # --------------------------------------------------------------------------- #
 # The Odds API – Matches + Quoten
 # --------------------------------------------------------------------------- #
+def get_api_quota_status() -> dict:
+    """Liefert den Kontingent-Status beider APIs für die Anzeige in der UI.
+
+    Returns ein dict:
+      {
+        "odds":   {"remaining": int|None, "used": int|None, "total": int|None},
+        "tennis": {"used": int, "limit": int|None, "remaining": int|None},
+      }
+    Für The Odds API wird – falls noch nichts erfasst wurde – ein kostenloser
+    /sports-Aufruf genutzt (dieser zählt nicht gegen das Kontingent).
+    """
+    # The Odds API
+    if _odds_quota["remaining"] is None and config.ODDS_API_KEY:
+        _get(f"{config.ODDS_API_BASE}/sports", {"apiKey": config.ODDS_API_KEY})
+    remaining = _odds_quota["remaining"]
+    used = _odds_quota["used"]
+    total = (remaining + used) if (remaining is not None and used is not None) else None
+
+    # API-Tennis (eigener Zähler)
+    period = datetime.now().strftime("%Y-%m")
+    tennis_used = database.get_api_usage("api_tennis", period)
+    limit = config.API_TENNIS_MONTHLY_LIMIT or None
+    tennis_remaining = max(0, limit - tennis_used) if limit else None
+
+    return {
+        "odds": {"remaining": remaining, "used": used, "total": total},
+        "tennis": {"used": tennis_used, "limit": limit, "remaining": tennis_remaining},
+    }
+
+
 def active_tennis_keys() -> list[str]:
     """Ermittelt die aktiven Tennis-Sport-Keys von The Odds API.
 

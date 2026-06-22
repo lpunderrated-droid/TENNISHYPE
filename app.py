@@ -248,6 +248,49 @@ def run_auto_settle(_cache_key: str) -> int:
         return 0
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_api_quota(_cache_key: str) -> dict:
+    """Lädt den API-Kontingent-Status (alle 15 Min frisch). Gibt ein dict zurück."""
+    try:
+        return data_fetcher.get_api_quota_status()
+    except Exception as exc:  # bewusst breit: UI darf nie crashen
+        log.error("load_api_quota fehlgeschlagen: %s", exc)
+        return {}
+
+
+def _render_api_quota_sidebar() -> None:
+    """Zeigt das verbleibende API-Kontingent beider Anbieter in der Sidebar. Gibt None zurück."""
+    status = load_api_quota(datetime.now().strftime("%Y-%m-%d-%H-%M")[:15])
+    if not status:
+        return None
+
+    st.sidebar.divider()
+    st.sidebar.markdown("**📡 API-Kontingent**")
+
+    odds = status.get("odds", {})
+    rem = odds.get("remaining")
+    total = odds.get("total")
+    if rem is not None:
+        anteil = (rem / total) if total else None
+        zusatz = f" / {total:,}".replace(",", ".") if total else ""
+        st.sidebar.progress(min(1.0, anteil) if anteil is not None else 1.0,
+                            text=f"The Odds API: {rem:,}".replace(",", ".") + zusatz + " übrig")
+    else:
+        st.sidebar.caption("The Odds API: Kontingent unbekannt")
+
+    tennis = status.get("tennis", {})
+    used = tennis.get("used", 0)
+    limit = tennis.get("limit")
+    t_rem = tennis.get("remaining")
+    if limit and t_rem is not None:
+        st.sidebar.progress(min(1.0, t_rem / limit),
+                            text=f"API-Tennis: {t_rem:,}".replace(",", ".") + f" / {limit:,}".replace(",", ".") + " übrig")
+    else:
+        st.sidebar.caption(f"API-Tennis: {used} Aufrufe diesen Monat genutzt")
+    st.sidebar.caption("Zähler aktualisiert sich alle 15 Min.")
+    return None
+
+
 def status_badge(status: str) -> str:
     """Gibt das passende Status-Emoji-Label zurück."""
     return {"gewonnen": "✅ Gewonnen", "verloren": "❌ Verloren"}.get(status, "🟡 Offen")
@@ -590,6 +633,8 @@ def main() -> None:
 
     if not config.ODDS_API_KEY or not config.API_TENNIS_KEY:
         st.sidebar.warning("⚠️ API-Keys fehlen in der .env-Datei.")
+
+    _render_api_quota_sidebar()
 
     if config.APP_PASSWORD and st.session_state.get("auth_ok"):
         if st.sidebar.button("🚪 Abmelden"):
