@@ -17,6 +17,7 @@ from typing import Iterator, Optional
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 
 import config
 
@@ -40,7 +41,11 @@ def _build_engine() -> Engine:
             cur.close()
 
         return engine
-    # Postgres & Co.: pool_pre_ping verhindert tote Verbindungen nach Idle
+    # Supabase Transaction-Pooler (pgbouncer, Port 6543): kein eigenes
+    # Connection-Pooling von SQLAlchemy, sonst drohen "prepared statement"-Fehler.
+    if "pooler.supabase.com:6543" in url:
+        return create_engine(url, future=True, poolclass=NullPool)
+    # Sonstiges Postgres: pool_pre_ping verhindert tote Verbindungen nach Idle
     return create_engine(url, future=True, pool_pre_ping=True)
 
 
