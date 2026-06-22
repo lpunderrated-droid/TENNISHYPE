@@ -29,12 +29,18 @@ def _combi_stake(c: dict) -> float:
     return float(c.get("einsatz") or config.COMBI_EINSATZ_DEFAULT)
 
 
-def _tip_hit_stats(predictions: list[dict]) -> tuple[float, int, int]:
-    """Trefferquote auf Tipp-Ebene: jeder abgerechnete Tipp zählt (inkl. Kombi-Legs)."""
-    settled = [p for p in predictions if p["status"] in ("gewonnen", "verloren")]
+def _tip_hit_stats(
+    predictions: list[dict], date_str: str | None = None
+) -> tuple[float, int, int, int]:
+    """Trefferquote auf Tipp-Ebene: jeder abgerechnete Tipp zählt (inkl. Kombi-Legs).
+
+    Returns: (rate %, gewonnen, abgerechnet, gesamt im Pool)
+    """
+    pool = [p for p in predictions if not date_str or p.get("date") == date_str]
+    settled = [p for p in pool if p["status"] in ("gewonnen", "verloren")]
     won = [p for p in settled if p["status"] == "gewonnen"]
     rate = (len(won) / len(settled) * 100) if settled else 0.0
-    return rate, len(won), len(settled)
+    return rate, len(won), len(settled), len(pool)
 
 
 def _today_betting_stats(tips: list[dict], date_str: str) -> dict:
@@ -62,12 +68,14 @@ def _today_betting_stats(tips: list[dict], date_str: str) -> dict:
         elif t.get("status") != "offen":
             realisiert += float(t.get("gewinn_verlust") or 0)
 
-    offene = sum(1 for t in singles if t.get("status") == "offen") + sum(
-        1 for c in combis_today if c.get("status") == "offen"
-    )
-    eingetragen = sum(1 for t in singles if t.get("status") != "offen") + sum(
-        1 for c in combis_today if c.get("status") != "offen"
-    )
+    offene = sum(1 for t in tips if t.get("status") == "offen")
+    trefferquote, gewonnen_tips, settled_tips, _ = _tip_hit_stats(tips)
+    if settled_tips:
+        treffer_sub = f"{gewonnen_tips}/{settled_tips} Tipps korrekt"
+    elif tips:
+        treffer_sub = f"0/{len(tips)} abgerechnet"
+    else:
+        treffer_sub = None
 
     einsatz_sub = f"{len(singles)} Einzel · {len(combis_today)} Kombis"
     gewinn_sub = f"Realisiert: {realisiert:+.2f} €" if realisiert != 0 else None
@@ -76,7 +84,9 @@ def _today_betting_stats(tips: list[dict], date_str: str) -> dict:
         "gesamt_einsatz": gesamt_einsatz,
         "moeglich": moeglich,
         "offene": offene,
-        "eingetragen": eingetragen,
+        "trefferquote": trefferquote,
+        "treffer_sub": treffer_sub,
+        "settled_tips": settled_tips,
         "einsatz_sub": einsatz_sub,
         "gewinn_sub": gewinn_sub,
         "in_combis": in_combis,
@@ -442,6 +452,11 @@ def render_tips_page() -> None:
     stats = _today_betting_stats(tips, date_str)
 
     gewinn_tone = "green" if stats["moeglich"] > 0 else ""
+    tq = stats["trefferquote"]
+    tq_tone = (
+        "green" if stats["settled_tips"] and tq >= 50
+        else ("red" if stats["settled_tips"] and tq < 50 else "")
+    )
     st.markdown(
         _tiles_html([
             {"lbl": "Aktive Picks", "val": len(tips), "tone": "green"},
@@ -457,7 +472,12 @@ def render_tips_page() -> None:
                 "sub": stats["gewinn_sub"],
             },
             {"lbl": "Offen", "val": stats["offene"], "tone": "yellow"},
-            {"lbl": "Eingetragen", "val": stats["eingetragen"]},
+            {
+                "lbl": "Trefferquote",
+                "val": f"{tq:.1f} %",
+                "sub": stats["treffer_sub"],
+                "tone": tq_tone,
+            },
         ]),
         unsafe_allow_html=True,
     )
@@ -721,7 +741,11 @@ def render_tracking_page() -> None:
         _combi_stake(c) for c in settled_combis
     )
     roi = (gesamt_pnl / settled_einsatz * 100) if settled_einsatz > 0 else 0.0
-    trefferquote, gewonnen_tips, settled_tips = _tip_hit_stats(all_predictions)
+    trefferquote, gewonnen_tips, settled_tips, _ = _tip_hit_stats(all_predictions)
+    tq_tone = (
+        "green" if settled_tips and trefferquote >= 50
+        else ("red" if settled_tips and trefferquote < 50 else "")
+    )
 
     pnl_tone = "green" if gesamt_pnl > 0 else ("red" if gesamt_pnl < 0 else "")
     roi_tone = "green" if roi > 0 else ("red" if roi < 0 else "")
@@ -732,7 +756,7 @@ def render_tracking_page() -> None:
             {"lbl": "Gewinn / Verlust", "val": f"{gesamt_pnl:+.2f} €", "tone": pnl_tone},
             {"lbl": "ROI", "val": f"{roi:+.1f} %", "tone": roi_tone},
             {"lbl": "Trefferquote", "val": f"{trefferquote:.1f} %",
-             "sub": f"{gewonnen_tips}/{settled_tips} Tipps korrekt"},
+             "sub": f"{gewonnen_tips}/{settled_tips} Tipps korrekt", "tone": tq_tone},
         ]),
         unsafe_allow_html=True,
     )
