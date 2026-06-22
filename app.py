@@ -286,7 +286,7 @@ def _render_api_quota_sidebar() -> None:
         st.sidebar.progress(min(1.0, t_rem / limit),
                             text=f"API-Tennis: {t_rem:,}".replace(",", ".") + f" / {limit:,}".replace(",", ".") + " übrig")
     else:
-        st.sidebar.caption(f"API-Tennis: {used} Aufrufe diesen Monat genutzt")
+        st.sidebar.caption(f"API-Tennis: {used:,}".replace(",", ".") + " Aufrufe diesen Monat (Testzugang – kein Limit bekannt)")
     st.sidebar.caption("Zähler aktualisiert sich alle 15 Min.")
     return None
 
