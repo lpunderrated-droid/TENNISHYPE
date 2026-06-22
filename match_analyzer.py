@@ -201,11 +201,12 @@ def _ensure_player(name: str, rankings: dict[str, int]) -> None:
 # --------------------------------------------------------------------------- #
 # Haupt-Einstieg: Top-5 berechnen
 # --------------------------------------------------------------------------- #
-def analyze_match(match: dict, rankings: dict[str, int]) -> Optional[dict]:
+def analyze_match(match: dict, rankings: dict[str, int], use_h2h: bool = True) -> Optional[dict]:
     """Analysiert ein einzelnes Match und liefert ein Tipp-dict oder None.
 
     None, wenn die Konfidenz die Mindestschwelle nicht erreicht oder Quoten
-    fehlen.
+    fehlen. Mit use_h2h=False wird die (langsame) H2H-Abfrage übersprungen –
+    nützlich für einen schnellen Vorab-Filter über alle Matches.
     """
     player1 = match.get("player1")
     player2 = match.get("player2")
@@ -225,9 +226,12 @@ def analyze_match(match: dict, rankings: dict[str, int]) -> Optional[dict]:
     p_form = form_probability(None, None)
     p_surface = surface_probability(None, None, surface)
 
-    # Schicht 4: H2H (best effort)
-    h2h = data_fetcher.fetch_h2h(player1, player2)
-    p_h2h = h2h_probability(h2h, player1)
+    # Schicht 4: H2H (best effort) – nur wenn gewünscht, da langsam
+    if use_h2h:
+        h2h = data_fetcher.fetch_h2h(player1, player2)
+        p_h2h = h2h_probability(h2h, player1)
+    else:
+        p_h2h = None
 
     prob_p1 = combine_layers(p_elo, p_form, p_surface, p_h2h)
 
@@ -280,10 +284,22 @@ def generate_top_tips() -> list[dict]:
         log.info("Keine Matches/Quoten für heute verfügbar.")
         return []
 
-    kandidaten: list[dict] = []
+    # Durchlauf 1 (schnell, ohne H2H): grobe Vorauswahl über alle Matches
+    vorauswahl: list[tuple[dict, dict]] = []
     for match in matches:
         database.insert_match(match)
-        tipp = analyze_match(match, rankings)
+        tipp = analyze_match(match, rankings, use_h2h=False)
+        if tipp is not None:
+            vorauswahl.append((match, tipp))
+
+    # Nur die besten Kandidaten weiterverfolgen (begrenzt die H2H-API-Aufrufe)
+    vorauswahl.sort(key=lambda paar: paar[1]["confidence"], reverse=True)
+    engere_wahl = vorauswahl[: config.MAX_TIPPS_PRO_TAG * 2]
+
+    # Durchlauf 2 (genau, mit H2H): nur für die engere Auswahl
+    kandidaten: list[dict] = []
+    for match, _ in engere_wahl:
+        tipp = analyze_match(match, rankings, use_h2h=True)
         if tipp is not None:
             kandidaten.append(tipp)
 
