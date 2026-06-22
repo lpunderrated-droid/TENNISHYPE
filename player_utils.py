@@ -111,3 +111,40 @@ def lookup_ranking(name: str | None, rankings: dict[str, int]) -> Optional[int]:
     if best_len >= 2:
         return best_rank
     return None
+
+
+def lookup_player_key(name: str | None, player_keys: dict[str, str]) -> Optional[str]:
+    """Findet den API-Tennis player_key zu einem Spielernamen (best effort).
+
+    Nutzt dieselbe Strategie wie lookup_ranking (exakt, Token-Menge, Teiltreffer).
+    """
+    if not name or not player_keys:
+        return None
+
+    exact = dict(player_keys)
+    by_tokens: dict[frozenset[str], str] = {}
+    for key_name, pk in player_keys.items():
+        tokens = name_tokens(key_name)
+        if tokens and tokens not in by_tokens:
+            by_tokens[tokens] = pk
+
+    key = normalize_name(name)
+    if key in exact:
+        return exact[key]
+
+    tokens = name_tokens(name)
+    if not tokens:
+        return None
+
+    if tokens in by_tokens:
+        return by_tokens[tokens]
+
+    best_key: Optional[str] = None
+    best_len = 0
+    for rank_tokens, pk in by_tokens.items():
+        if rank_tokens <= tokens and len(rank_tokens) > best_len:
+            best_len = len(rank_tokens)
+            best_key = pk
+    if best_len >= 2:
+        return best_key
+    return None

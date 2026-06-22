@@ -19,7 +19,7 @@ import requests
 
 import config
 import database
-from player_utils import matches_player_name, normalize_name
+from player_utils import lookup_player_key, matches_player_name, normalize_name
 
 # Zuletzt von The Odds API gemeldetes Kontingent (aus Response-Headern).
 # Wird bei jedem echten Odds-Aufruf aktualisiert.
@@ -458,13 +458,19 @@ def _iter_fixture_date_chunks(days_back: int, chunk_days: int):
         cur_end = cur_start
 
 
-def _fetch_finished_fixtures_for_type(event_type_key: str, *, chunked: bool) -> list[dict]:
+def _fetch_finished_fixtures_for_type(
+    event_type_key: str,
+    *,
+    days_back: int | None = None,
+    chunked: bool = False,
+) -> list[dict]:
     """Lädt abgeschlossene Einzel-Fixtures für einen event_type_key."""
+    history_days = days_back or config.FIXTURES_HISTORY_DAYS
     rows: list[dict] = []
     if chunked:
-        ranges = list(_iter_fixture_date_chunks(config.FIXTURES_HISTORY_DAYS, config.FIXTURES_CHUNK_DAYS))
+        ranges = list(_iter_fixture_date_chunks(history_days, 30))
     else:
-        start = (datetime.now() - timedelta(days=config.FIXTURES_HISTORY_DAYS)).strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=history_days)).strftime("%Y-%m-%d")
         end = datetime.now().strftime("%Y-%m-%d")
         ranges = [(start, end)]
 
@@ -488,15 +494,16 @@ def _fetch_finished_fixtures_for_type(event_type_key: str, *, chunked: bool) -> 
             row = _fixture_event_to_row(ev)
             if row:
                 rows.append(row)
+        time.sleep(0.3)
     return rows
 
 
 def fetch_finished_fixtures() -> list[dict]:
     """Lädt abgeschlossene Einzel-Matches der letzten N Tage (täglich gecacht).
 
-    ATP/WTA plus Challenger (für Spieler wie Mikrut, die überwiegend Challenger
-    spielen). Challenger wird in 30-Tage-Chunks geladen, da größere Zeiträume
-    bei der API HTTP 500 auslösen.
+    ATP/WTA (120 Tage) plus Challenger (60 Tage, ein Abruf pro Tour). Spieler mit
+    wenigen Bulk-Treffern werden zusätzlich per player_key ergänzt (siehe
+    build_match_histories_with_supplement).
 
     Returns normalisierte dicts mit date, first_player, second_player, winner,
     surface, tournament – sortiert nach Datum absteigend (neueste zuerst).
@@ -504,7 +511,8 @@ def fetch_finished_fixtures() -> list[dict]:
     if not config.API_TENNIS_KEY:
         return []
 
-    cache = _read_cache("fixtures_finished_v2")
+    cache_key = f"fixtures_finished_{config.FIXTURES_HISTORY_CACHE_VERSION}"
+    cache = _read_cache(cache_key)
     if cache is not None:
         log.info("Match-Historie aus Cache (%s Fixtures).", len(cache))
         return cache
@@ -516,7 +524,13 @@ def fetch_finished_fixtures() -> list[dict]:
         rohe.extend(_fetch_finished_fixtures_for_type(event_type_key, chunked=False))
 
     for event_type_key in config.FIXTURES_EVENT_TYPES_CHALLENGER:
-        rohe.extend(_fetch_finished_fixtures_for_type(event_type_key, chunked=True))
+        rohe.extend(
+            _fetch_finished_fixtures_for_type(
+                event_type_key,
+                days_back=config.FIXTURES_CHALLENGER_HISTORY_DAYS,
+                chunked=False,
+            )
+        )
 
     deduped: list[dict] = []
     for row in rohe:
@@ -527,9 +541,117 @@ def fetch_finished_fixtures() -> list[dict]:
         deduped.append(row)
 
     deduped.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
-    _write_cache("fixtures_finished_v2", deduped)
+    _write_cache(cache_key, deduped)
     log.info("Match-Historie geladen: %s abgeschlossene Fixtures.", len(deduped))
     return deduped
+
+
+def fetch_player_keys() -> dict[str, str]:
+    """Lädt player_key aus ATP/WTA-Standings (normalisierter Name -> Key)."""
+    if not config.API_TENNIS_KEY:
+        return {}
+
+    cache = _read_cache("player_keys")
+    if cache is not None:
+        return cache
+
+    keys: dict[str, str] = {}
+    for event_type in ("ATP", "WTA"):
+        data = _get(
+            config.API_TENNIS_BASE,
+            {
+                "method": "get_standings",
+                "event_type": event_type,
+                "APIkey": config.API_TENNIS_KEY,
+            },
+        )
+        if not isinstance(data, dict):
+            continue
+        result = data.get("result", [])
+        if not isinstance(result, list):
+            continue
+        for row in result:
+            player = row.get("player")
+            pk = row.get("player_key")
+            if player and pk is not None:
+                keys[normalize_name(player)] = str(pk)
+
+    _write_cache("player_keys", keys)
+    log.info("Player-Keys geladen: %s Spieler.", len(keys))
+    return keys
+
+
+def fetch_player_fixtures_by_key(player_key: str) -> list[dict]:
+    """Lädt abgeschlossene Einzel-Matches eines Spielers (alle Event-Typen)."""
+    if not config.API_TENNIS_KEY or not player_key:
+        return []
+
+    cache = _read_cache(f"player_fix_{player_key}")
+    if cache is not None:
+        return cache
+
+    start = (datetime.now() - timedelta(days=config.FIXTURES_HISTORY_DAYS)).strftime("%Y-%m-%d")
+    end = datetime.now().strftime("%Y-%m-%d")
+    data = _get(
+        config.API_TENNIS_BASE,
+        {
+            "method": "get_fixtures",
+            "APIkey": config.API_TENNIS_KEY,
+            "player_key": player_key,
+            "date_start": start,
+            "date_stop": end,
+        },
+    )
+    rows: list[dict] = []
+    if isinstance(data, dict):
+        result = data.get("result", [])
+        if isinstance(result, list):
+            for ev in result:
+                row = _fixture_event_to_row(ev)
+                if row:
+                    rows.append(row)
+
+    rows.sort(key=lambda x: str(x.get("date") or ""), reverse=True)
+    _write_cache(f"player_fix_{player_key}", rows)
+    return rows
+
+
+def _merge_match_histories(a: list[dict], b: list[dict]) -> list[dict]:
+    """Führt zwei Match-Historien zusammen (neueste zuerst, ohne Duplikate)."""
+    seen: set[tuple] = set()
+    merged: list[dict] = []
+    for m in sorted(a + b, key=lambda x: str(x.get("date") or ""), reverse=True):
+        key = (m.get("date"), m.get("won"), m.get("surface"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(m)
+    return merged
+
+
+def build_match_histories_with_supplement(player_names: set[str]) -> dict[str, list[dict]]:
+    """Baut Match-Historien aus Bulk-Fixtures und ergänzt sparse Spieler per player_key."""
+    fixtures = fetch_finished_fixtures()
+    histories = build_match_histories(fixtures, player_names)
+
+    sparse = [n for n in player_names if len(histories.get(n, [])) < config.FORM_LETZTE_N]
+    if not sparse:
+        return histories
+
+    player_keys = fetch_player_keys()
+    for name in sparse:
+        pk = lookup_player_key(name, player_keys)
+        if not pk:
+            continue
+        extra_fixtures = fetch_player_fixtures_by_key(pk)
+        if not extra_fixtures:
+            continue
+        extra = build_match_histories(extra_fixtures, {name})
+        merged = _merge_match_histories(histories.get(name, []), extra.get(name, []))
+        histories[name] = merged
+        log.info("Form-Historie für %s via player_key ergänzt (%s Spiele).", name, len(merged))
+
+    return histories
 
 
 def build_match_histories(fixtures: list[dict], player_names: set[str]) -> dict[str, list[dict]]:

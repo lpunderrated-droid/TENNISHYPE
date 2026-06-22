@@ -299,8 +299,7 @@ def generate_top_tips() -> list[dict]:
 
     # Match-Historie einmal laden (Form + Oberfläche für alle Spieler des Tages)
     spieler = {m["player1"] for m in matches} | {m["player2"] for m in matches}
-    fixtures = data_fetcher.fetch_finished_fixtures()
-    histories = data_fetcher.build_match_histories(fixtures, spieler)
+    histories = data_fetcher.build_match_histories_with_supplement(spieler)
     mit_historie = sum(1 for n in spieler if histories.get(n))
     log.info("Match-Historie: %s/%s Spieler mit Daten.", mit_historie, len(spieler))
 

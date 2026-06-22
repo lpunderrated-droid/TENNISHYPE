@@ -318,8 +318,7 @@ def load_player_context(_cache_key: str, player_names: tuple[str, ...]) -> dict:
     """Lädt Rankings + Match-Historie für die Anzeige auf den Tipp-Karten."""
     try:
         rankings = data_fetcher.fetch_rankings()
-        fixtures = data_fetcher.fetch_finished_fixtures()
-        histories = data_fetcher.build_match_histories(fixtures, set(player_names))
+        histories = data_fetcher.build_match_histories_with_supplement(set(player_names))
         return {"rankings": rankings, "histories": histories}
     except Exception as exc:
         log.error("load_player_context fehlgeschlagen: %s", exc)
@@ -366,6 +365,7 @@ def render_tips_page() -> None:
     with col_btn:
         if st.button("🔄 Tipps neu laden", use_container_width=True):
             _ensure_today_tips_generated.clear()
+            load_player_context.clear()
             st.rerun()
 
     with st.spinner("Lade heutige Tipps …"):
@@ -402,7 +402,10 @@ def render_tips_page() -> None:
     st.markdown("<div class='tg-section'>Heutige Positionen</div>", unsafe_allow_html=True)
 
     spieler = tuple(sorted({p for t in tips for p in (t["player1"], t["player2"])}))
-    ctx = load_player_context(datetime.now().strftime("%Y-%m-%d"), spieler)
+    ctx = load_player_context(
+        f"{datetime.now().strftime('%Y-%m-%d')}-{config.FIXTURES_HISTORY_CACHE_VERSION}",
+        spieler,
+    )
     rankings = ctx.get("rankings", {})
     histories = ctx.get("histories", {})
 
