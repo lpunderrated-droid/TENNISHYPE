@@ -13,6 +13,7 @@ import plotly.express as px
 import streamlit as st
 
 import config
+import combi
 import database
 import data_fetcher
 import match_analyzer
@@ -112,6 +113,13 @@ section[data-testid="stSidebar"] { background: #0d1116; border-right: 1px solid 
 
 .tg-section { font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px;
   margin:6px 0 10px; font-weight:700; }
+.combi-card { background:var(--panel2); border:1px solid #3a434d; border-radius:12px;
+  padding:12px 14px; margin-bottom:10px; }
+.combi-card .legs { color:var(--muted); font-size:12px; margin-top:6px; line-height:1.5; }
+.combi-card .head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.combi-card .odds { color:var(--yellow); font-weight:800; font-size:16px; }
+.combi-builder { background:var(--panel); border:1px solid var(--border); border-radius:12px;
+  padding:14px 16px; margin-bottom:16px; }
 .stButton>button { background:var(--panel2); color:var(--text); border:1px solid var(--border);
   border-radius:10px; font-weight:600; }
 .stButton>button:hover { border-color:var(--green); color:var(--green); }
@@ -401,22 +409,112 @@ def render_tips_page() -> None:
 
     st.markdown("<div class='tg-section'>Heutige Positionen</div>", unsafe_allow_html=True)
 
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    in_combis = database.get_prediction_ids_in_combis(date_str)
+
     spieler = tuple(sorted({p for t in tips for p in (t["player1"], t["player2"])}))
     ctx = load_player_context(
-        f"{datetime.now().strftime('%Y-%m-%d')}-{config.FIXTURES_HISTORY_CACHE_VERSION}",
+        f"{date_str}-{config.FIXTURES_HISTORY_CACHE_VERSION}",
         spieler,
     )
     rankings = ctx.get("rankings", {})
     histories = ctx.get("histories", {})
 
-    st.markdown(
-        "".join(_tip_card_html(t, rankings, histories) for t in tips),
-        unsafe_allow_html=True,
-    )
+    _render_combi_section(tips, date_str, in_combis)
+
+    for t in tips:
+        pid = t.get("id")
+        col_pick, col_card = st.columns([0.35, 12], gap="small")
+        with col_pick:
+            if pid in in_combis:
+                st.markdown("<div style='padding-top:18px;font-size:18px' title='In Kombi'>🔗</div>",
+                            unsafe_allow_html=True)
+            else:
+                st.checkbox("Kombi", key=f"combi_pick_{pid}", label_visibility="collapsed")
+        with col_card:
+            badge = " <span class='chip' style='color:var(--yellow)'>Kombi-Leg</span>" if pid in in_combis else ""
+            st.markdown(_tip_card_html(t, rankings, histories, combi_badge=badge), unsafe_allow_html=True)
     return None
 
 
-def _tip_card_html(t: dict, rankings: dict, histories: dict) -> str:
+def _render_combi_section(tips: list[dict], date_str: str, in_combis: set[int]) -> None:
+    """Zeigt bestehende Kombis und Builder zum Anlegen neuer Kombiwetten."""
+    combis = database.get_combis_by_date(date_str)
+    selectable = [t for t in tips if t.get("id") not in in_combis]
+
+    st.markdown("<div class='tg-section'>Kombiwetten</div>", unsafe_allow_html=True)
+
+    if combis:
+        for c in combis:
+            st.markdown(_combi_card_html(c), unsafe_allow_html=True)
+    else:
+        st.caption("Noch keine Kombi für heute.")
+
+    selected = [
+        t for t in selectable
+        if st.session_state.get(f"combi_pick_{t.get('id')}", False)
+    ]
+    if selected:
+        combined = combi.combined_odds(selected)
+        payout = combined * config.EINSATZ - config.EINSATZ if combined > 1 else 0
+        legs_txt = " · ".join(html.escape(t.get("tip") or "?") for t in selected)
+        st.markdown(
+            f"<div class='combi-builder'>"
+            f"<b>{len(selected)} Legs ausgewählt</b> · Kombi-Quote <span class='odds'>{combined:.2f}</span> "
+            f"· Gewinn bei 10 €: <span style='color:var(--green)'>+{payout:.2f} €</span>"
+            f"<div class='legs'>{legs_txt}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        if st.button("🎰 Kombi spielen", use_container_width=True, disabled=len(selected) < config.COMBI_MIN_LEGS):
+            ok, msg = database.create_combi([int(t["id"]) for t in selected], date_str)
+            if ok:
+                database.update_bankroll_history()
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+    with col_b:
+        if selected:
+            st.caption(
+                f"Mindestens {config.COMBI_MIN_LEGS} Legs · Einsatz {config.EINSATZ:.0f} € · "
+                "Legs in Kombis zählen nicht als Einzelwette im Tracking."
+            )
+    return None
+
+
+def _combi_card_html(c: dict) -> str:
+    """HTML für eine gespeicherte Kombiwette."""
+    legs = c.get("legs") or []
+    status = c.get("status") or "offen"
+    pill = {"gewonnen": ("win", "Gewonnen"), "verloren": ("loss", "Verloren")}.get(
+        status, ("open", "Offen")
+    )
+    legs_html = "<br>".join(
+        f"{'✅' if l.get('status') == 'gewonnen' else '❌' if l.get('status') == 'verloren' else '⏳'} "
+        f"{html.escape(l.get('tip') or '?')} "
+        f"({html.escape(l.get('player1') or '')} vs {html.escape(l.get('player2') or '')}) "
+        f"@ {l.get('betano_odds') or '—'}"
+        for l in legs
+    )
+    pnl = c.get("gewinn_verlust") or 0
+    pnl_html = ""
+    if status != "offen":
+        cls = "green" if pnl > 0 else "red"
+        pnl_html = f" · <span style='color:var(--{cls})'>{pnl:+.2f} €</span>"
+
+    return (
+        f"<div class='combi-card'><div class='head'>"
+        f"<span><b>Kombi</b> · {len(legs)} Legs · Quote <span class='odds'>{c.get('combined_odds', 0):.2f}</span>"
+        f"{pnl_html}</span>"
+        f"<span class='pill {pill[0]}'>{pill[1]}</span></div>"
+        f"<div class='legs'>{legs_html}</div></div>"
+    )
+
+
+def _tip_card_html(t: dict, rankings: dict, histories: dict, combi_badge: str = "") -> str:
     """Baut eine Tipp-Karte im Trading-Look. Gibt einen HTML-String zurück."""
     tip = t.get("tip", "")
     p1, p2 = t.get("player1", ""), t.get("player2", "")
@@ -463,7 +561,7 @@ def _tip_card_html(t: dict, rankings: dict, histories: dict) -> str:
         f"<div class='player-line'><span class='{p2_cls}'>{html.escape(p2)}</span>"
         f"{_player_stats_html(p2, rankings, histories)}</div>"
         "</div>"
-        f"<div class='meta'>{''.join(meta)}</div></div>"
+        f"<div class='meta'>{''.join(meta)}{combi_badge}</div></div>"
         f"<span class='pill {pill[0]}'>{pill[1]}</span></div>"
         "<div class='tgrid'>"
         f"<div class='cell'><div class='k'>Tipp</div><div class='v tip'>{html.escape(tip)}</div></div>"
@@ -488,25 +586,33 @@ def render_tracking_page() -> None:
         unsafe_allow_html=True,
     )
 
-    alle = database.get_all_predictions()
-    settled = [p for p in alle if p["status"] in ("gewonnen", "verloren")]
-    gewonnen = [p for p in settled if p["status"] == "gewonnen"]
+    alle_combis = database.get_all_combis()
+    singles = database.get_single_predictions_for_tracking()
+    settled_singles = [p for p in singles if p["status"] in ("gewonnen", "verloren")]
+    settled_combis = [c for c in alle_combis if c["status"] in ("gewonnen", "verloren")]
+    gewonnen_s = [p for p in settled_singles if p["status"] == "gewonnen"]
+    gewonnen_c = [c for c in settled_combis if c["status"] == "gewonnen"]
 
-    gesamt_einsatz = len(alle) * config.EINSATZ
-    gesamt_pnl = sum(p["gewinn_verlust"] for p in settled)
-    settled_einsatz = len(settled) * config.EINSATZ
+    gesamt_einsatz = len(singles) * config.EINSATZ + len(alle_combis) * config.EINSATZ
+    gesamt_pnl = sum(p["gewinn_verlust"] for p in settled_singles) + sum(
+        c["gewinn_verlust"] for c in settled_combis
+    )
+    settled_count = len(settled_singles) + len(settled_combis)
+    gewonnen_count = len(gewonnen_s) + len(gewonnen_c)
+    settled_einsatz = settled_count * config.EINSATZ
     roi = (gesamt_pnl / settled_einsatz * 100) if settled_einsatz > 0 else 0.0
-    trefferquote = (len(gewonnen) / len(settled) * 100) if settled else 0.0
+    trefferquote = (gewonnen_count / settled_count * 100) if settled_count else 0.0
 
     pnl_tone = "green" if gesamt_pnl > 0 else ("red" if gesamt_pnl < 0 else "")
     roi_tone = "green" if roi > 0 else ("red" if roi < 0 else "")
     st.markdown(
         _tiles_html([
-            {"lbl": "Gesamteinsatz", "val": f"{gesamt_einsatz:.0f} €", "sub": f"{len(alle)} Picks"},
+            {"lbl": "Gesamteinsatz", "val": f"{gesamt_einsatz:.0f} €",
+             "sub": f"{len(singles)} Einzel · {len(alle_combis)} Kombis"},
             {"lbl": "Gewinn / Verlust", "val": f"{gesamt_pnl:+.2f} €", "tone": pnl_tone},
             {"lbl": "ROI", "val": f"{roi:+.1f} %", "tone": roi_tone},
             {"lbl": "Trefferquote", "val": f"{trefferquote:.1f} %",
-             "sub": f"{len(gewonnen)}/{len(settled)} settled"},
+             "sub": f"{gewonnen_count}/{settled_count} settled"},
         ]),
         unsafe_allow_html=True,
     )
@@ -514,9 +620,51 @@ def render_tracking_page() -> None:
     _render_manual_fallback()
 
     st.divider()
-    _render_table(alle)
+    _render_combi_table(alle_combis)
     st.divider()
-    _render_charts(settled)
+    _render_table(singles)
+    st.divider()
+    settled_for_charts = settled_singles + [
+        {"date": c["date"], "gewinn_verlust": c["gewinn_verlust"], "status": c["status"],
+         "confidence": None, "tip": combi.format_legs_summary(c.get("legs") or [])}
+        for c in settled_combis
+    ]
+    _render_charts(settled_for_charts)
+    return None
+
+
+def _render_combi_table(combis: list[dict]) -> None:
+    """Tabelle aller Kombiwetten."""
+    st.markdown("<div class='tg-section'>Kombiwetten</div>", unsafe_allow_html=True)
+    if not combis:
+        st.info("Noch keine Kombiwetten angelegt.")
+        return None
+
+    rows = []
+    for c in combis:
+        legs = c.get("legs") or []
+        rows.append({
+            "Datum": c.get("date"),
+            "Legs": len(legs),
+            "Spiele": combi.format_legs_summary(legs),
+            "Quote": c.get("combined_odds"),
+            "Einsatz €": c.get("einsatz") or config.EINSATZ,
+            "G/V €": c.get("gewinn_verlust") or 0.0,
+            "Status": status_badge(c.get("status") or "offen"),
+        })
+    df = pd.DataFrame(rows).sort_values("Datum", ascending=False)
+
+    def _farbe(val: float) -> str:
+        if val > 0:
+            return "color: #0ecb81; font-weight: 700;"
+        if val < 0:
+            return "color: #f6465d; font-weight: 700;"
+        return ""
+
+    styler = df.style.map(_farbe, subset=["G/V €"]).format(
+        {"Quote": "{:.2f}", "Einsatz €": "{:.0f}", "G/V €": "{:+.2f}"}, na_rep="—"
+    )
+    st.dataframe(styler, use_container_width=True, hide_index=True)
     return None
 
 
@@ -555,7 +703,7 @@ def _render_manual_fallback() -> None:
 
 def _render_table(alle: list[dict]) -> None:
     """Rendert die filter- und sortierbare Tabelle aller Tipps. Gibt None zurück."""
-    st.markdown("<div class='tg-section'>Order-Historie</div>", unsafe_allow_html=True)
+    st.markdown("<div class='tg-section'>Einzelwetten</div>", unsafe_allow_html=True)
     if not alle:
         st.info("Noch keine Tipps vorhanden.")
         return None
@@ -651,18 +799,22 @@ def _render_charts(settled: list[dict]) -> None:
             fig.update_layout(yaxis_range=[0, 100])
             st.plotly_chart(fig, use_container_width=True)
 
-    # Chart 3: Durchschnittliche Konfidenz Gewonnen vs Verloren
-    st.markdown("**Durchschnittliche Konfidenz: Gewonnen vs Verloren**")
+    # Chart 3: Durchschnittliche Konfidenz Gewonnen vs Verloren (nur Einzelwetten)
+    st.markdown("**Durchschnittliche Konfidenz: Gewonnen vs Verloren (Einzelwetten)**")
     tmp = df.copy()
     tmp["confidence"] = pd.to_numeric(tmp["confidence"], errors="coerce") * 100
-    grp = tmp.groupby("status").agg(konfidenz=("confidence", "mean")).reset_index()
-    grp["status"] = grp["status"].map({"gewonnen": "Gewonnen", "verloren": "Verloren"})
-    fig = px.bar(grp, x="status", y="konfidenz", color="status",
-                 color_discrete_map={"Gewonnen": "#0ecb81", "Verloren": "#f6465d"},
-                 labels={"status": "", "konfidenz": "Ø Konfidenz %"})
-    _style_fig(fig)
-    fig.update_layout(showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    tmp = tmp.dropna(subset=["confidence"])
+    if tmp.empty:
+        st.info("Noch keine abgerechneten Einzelwetten mit Konfidenz.")
+    else:
+        grp = tmp.groupby("status").agg(konfidenz=("confidence", "mean")).reset_index()
+        grp["status"] = grp["status"].map({"gewonnen": "Gewonnen", "verloren": "Verloren"})
+        fig = px.bar(grp, x="status", y="konfidenz", color="status",
+                     color_discrete_map={"Gewonnen": "#0ecb81", "Verloren": "#f6465d"},
+                     labels={"status": "", "konfidenz": "Ø Konfidenz %"})
+        _style_fig(fig)
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
     return None
 
 

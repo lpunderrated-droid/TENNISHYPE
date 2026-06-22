@@ -84,7 +84,9 @@ CACHE_DIR = BASE_DIR / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 # --- Wett-Parameter ---
-EINSATZ = 10.00  # Fixer Einsatz pro Tipp – nicht konfigurierbar
+EINSATZ = 10.00  # Fixer Einsatz pro Tipp / Kombi – nicht konfigurierbar
+COMBI_MIN_LEGS = 2
+COMBI_MAX_LEGS = 5  # max. wie MAX_TIPPS_PRO_TAG
 MAX_TIPPS_PRO_TAG = 5
 MIN_KONFIDENZ = 0.60  # Nur Tipps mit Konfidenz > 60 %
 

@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import NullPool
 
 import config
+import combi
 from player_utils import normalize_name, names_match
 
 log = config.log
@@ -145,6 +146,26 @@ def init_db() -> None:
                     api TEXT NOT NULL,
                     count INTEGER DEFAULT 0,
                     PRIMARY KEY (period, api)
+                );
+            """))
+            conn.execute(text(f"""
+                CREATE TABLE IF NOT EXISTS combis (
+                    id {pk},
+                    date TEXT NOT NULL,
+                    einsatz REAL DEFAULT 10.0,
+                    combined_odds REAL NOT NULL,
+                    status TEXT DEFAULT 'offen',
+                    gewinn_verlust REAL DEFAULT 0.0,
+                    eingetragen_am TEXT,
+                    created_at TEXT
+                );
+            """))
+            conn.execute(text(f"""
+                CREATE TABLE IF NOT EXISTS combi_legs (
+                    combi_id INTEGER NOT NULL,
+                    prediction_id INTEGER NOT NULL,
+                    leg_order INTEGER DEFAULT 0,
+                    PRIMARY KEY (combi_id, prediction_id)
                 );
             """))
         log.info("Datenbank initialisiert (%s).", get_engine().dialect.name)
@@ -334,8 +355,7 @@ def get_all_predictions() -> list[dict]:
 def update_prediction_result(pred_id: int, gewonnen: bool) -> bool:
     """Trägt ein Ergebnis ein und berechnet Gewinn/Verlust.
 
-    Gewinn  = (betano_odds * EINSATZ) - EINSATZ
-    Verlust = -EINSATZ
+    Legs in einer Kombiwette erhalten keinen Einzel-PnL (nur Status für die Kombi).
     Returns True bei Erfolg, sonst False.
     """
     try:
@@ -347,13 +367,18 @@ def update_prediction_result(pred_id: int, gewonnen: bool) -> bool:
                 log.warning("update_prediction_result: Tipp %s nicht gefunden", pred_id)
                 return False
 
+            in_combi = conn.execute(
+                text("SELECT 1 FROM combi_legs WHERE prediction_id = :id LIMIT 1;"),
+                {"id": pred_id},
+            ).first() is not None
+
             odds = row["betano_odds"] if row["betano_odds"] else 0.0
             if gewonnen:
                 status = "gewonnen"
-                pnl = round(odds * config.EINSATZ - config.EINSATZ, 2)
+                pnl = 0.0 if in_combi else round(odds * config.EINSATZ - config.EINSATZ, 2)
             else:
                 status = "verloren"
-                pnl = -config.EINSATZ
+                pnl = 0.0 if in_combi else -config.EINSATZ
 
             now = datetime.now().isoformat(timespec="seconds")
             conn.execute(
@@ -364,6 +389,8 @@ def update_prediction_result(pred_id: int, gewonnen: bool) -> bool:
                 """),
                 {"status": status, "pnl": pnl, "now": now, "id": pred_id},
             )
+
+        refresh_combis_for_prediction(pred_id)
         log.info("Ergebnis eingetragen: Tipp %s -> %s (%.2f €)", pred_id, status, pnl)
         return True
     except SQLAlchemyError as exc:
@@ -371,18 +398,46 @@ def update_prediction_result(pred_id: int, gewonnen: bool) -> bool:
         return False
 
 
+def reset_prediction_result(pred_id: int) -> bool:
+    """Setzt einen Tipp auf offen zurück (z. B. nach Fehleintrag)."""
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                text("""
+                    UPDATE predictions
+                    SET status = 'offen', gewinn_verlust = 0.0, eingetragen_am = NULL
+                    WHERE id = :id;
+                """),
+                {"id": pred_id},
+            )
+        refresh_combis_for_prediction(pred_id)
+        return True
+    except SQLAlchemyError as exc:
+        log.error("reset_prediction_result fehlgeschlagen: %s", exc)
+        return False
+
+
 # --------------------------------------------------------------------------- #
 # Bankroll
 # --------------------------------------------------------------------------- #
 def update_bankroll_history() -> None:
-    """Berechnet die Bankroll-Historie aus abgeschlossenen Tipps neu. Gibt None zurück."""
+    """Berechnet die Bankroll-Historie aus Einzel- und Kombi-Wetten neu."""
     try:
         with get_connection() as conn:
             rows = conn.execute(
                 text("""
-                    SELECT date, SUM(gewinn_verlust) AS daily_pnl
-                    FROM predictions
-                    WHERE status IN ('gewonnen', 'verloren')
+                    SELECT date, SUM(pnl) AS daily_pnl FROM (
+                        SELECT p.date, p.gewinn_verlust AS pnl
+                        FROM predictions p
+                        WHERE p.status IN ('gewonnen', 'verloren')
+                          AND NOT EXISTS (
+                              SELECT 1 FROM combi_legs cl WHERE cl.prediction_id = p.id
+                          )
+                        UNION ALL
+                        SELECT c.date, c.gewinn_verlust AS pnl
+                        FROM combis c
+                        WHERE c.status IN ('gewonnen', 'verloren')
+                    ) combined
                     GROUP BY date
                     ORDER BY date ASC;
                 """)
@@ -405,6 +460,210 @@ def update_bankroll_history() -> None:
     except SQLAlchemyError as exc:
         log.error("update_bankroll_history fehlgeschlagen: %s", exc)
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Kombiwetten
+# --------------------------------------------------------------------------- #
+def get_prediction_ids_in_combis(date_str: str | None = None) -> set[int]:
+    """IDs aller Tipps, die bereits Teil einer Kombi sind (optional nur für ein Datum)."""
+    try:
+        with get_connection() as conn:
+            if date_str:
+                rows = conn.execute(
+                    text("""
+                        SELECT cl.prediction_id
+                        FROM combi_legs cl
+                        JOIN combis c ON c.id = cl.combi_id
+                        WHERE c.date = :date;
+                    """),
+                    {"date": date_str},
+                ).mappings().all()
+            else:
+                rows = conn.execute(text("SELECT prediction_id FROM combi_legs;")).mappings().all()
+            return {int(r["prediction_id"]) for r in rows}
+    except SQLAlchemyError as exc:
+        log.error("get_prediction_ids_in_combis fehlgeschlagen: %s", exc)
+        return set()
+
+
+def _fetch_combi_legs(conn, combi_id: int) -> list[dict]:
+    """Lädt Legs einer Kombi mit Prediction-Details."""
+    rows = conn.execute(
+        text("""
+            SELECT p.*
+            FROM combi_legs cl
+            JOIN predictions p ON p.id = cl.prediction_id
+            WHERE cl.combi_id = :cid
+            ORDER BY cl.leg_order ASC, cl.prediction_id ASC;
+        """),
+        {"cid": combi_id},
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def refresh_combis_for_prediction(pred_id: int) -> None:
+    """Aktualisiert alle Kombis, die diesen Tipp enthalten."""
+    try:
+        with get_connection() as conn:
+            combi_ids = conn.execute(
+                text("SELECT combi_id FROM combi_legs WHERE prediction_id = :pid;"),
+                {"pid": pred_id},
+            ).mappings().all()
+            for row in combi_ids:
+                _refresh_combi(conn, int(row["combi_id"]))
+    except SQLAlchemyError as exc:
+        log.error("refresh_combis_for_prediction fehlgeschlagen: %s", exc)
+
+
+def _refresh_combi(conn, combi_id: int) -> None:
+    """Berechnet Status/PnL einer Kombi neu aus ihren Legs."""
+    combi_row = conn.execute(
+        text("SELECT * FROM combis WHERE id = :id;"), {"id": combi_id}
+    ).mappings().first()
+    if not combi_row:
+        return
+
+    legs = _fetch_combi_legs(conn, combi_id)
+    status, pnl = combi.evaluate_combi(legs, float(combi_row["combined_odds"]))
+    eingetragen = datetime.now().isoformat(timespec="seconds") if status != "offen" else None
+    conn.execute(
+        text("""
+            UPDATE combis
+            SET status = :status, gewinn_verlust = :pnl, eingetragen_am = :ts
+            WHERE id = :id;
+        """),
+        {"status": status, "pnl": pnl, "ts": eingetragen, "id": combi_id},
+    )
+
+
+def create_combi(prediction_ids: list[int], date_str: str) -> tuple[bool, str]:
+    """Legt eine Kombiwette an. Returns (ok, message)."""
+    ids = list(dict.fromkeys(prediction_ids))
+    if len(ids) < config.COMBI_MIN_LEGS:
+        return False, f"Mindestens {config.COMBI_MIN_LEGS} Legs nötig."
+    if len(ids) > config.COMBI_MAX_LEGS:
+        return False, f"Maximal {config.COMBI_MAX_LEGS} Legs pro Kombi."
+
+    try:
+        with get_connection() as conn:
+            placeholders = ", ".join(f":id{i}" for i in range(len(ids)))
+            params = {f"id{i}": pid for i, pid in enumerate(ids)}
+            preds = conn.execute(
+                text(f"SELECT * FROM predictions WHERE id IN ({placeholders});"),
+                params,
+            ).mappings().all()
+            if len(preds) != len(ids):
+                return False, "Ein oder mehrere Tipps wurden nicht gefunden."
+
+            pred_map = {int(p["id"]): dict(p) for p in preds}
+            for pid in ids:
+                p = pred_map[pid]
+                if p.get("date") != date_str:
+                    return False, "Alle Legs müssen vom selben Tag sein."
+                taken = conn.execute(
+                    text("SELECT 1 FROM combi_legs WHERE prediction_id = :pid LIMIT 1;"),
+                    {"pid": pid},
+                ).first()
+                if taken:
+                    return False, f"{p.get('tip')} ist bereits in einer Kombi."
+
+            legs = [pred_map[pid] for pid in ids]
+            combined = combi.combined_odds(legs)
+            if combined <= 1.0:
+                return False, "Kombi-Quote konnte nicht berechnet werden (fehlende Quoten)."
+
+            now = datetime.now().isoformat(timespec="seconds")
+            if _is_sqlite():
+                result = conn.execute(
+                    text("""
+                        INSERT INTO combis (date, einsatz, combined_odds, status, gewinn_verlust, created_at)
+                        VALUES (:date, :einsatz, :odds, 'offen', 0.0, :now);
+                    """),
+                    {"date": date_str, "einsatz": config.EINSATZ, "odds": combined, "now": now},
+                )
+                combi_id = result.lastrowid
+            else:
+                row = conn.execute(
+                    text("""
+                        INSERT INTO combis (date, einsatz, combined_odds, status, gewinn_verlust, created_at)
+                        VALUES (:date, :einsatz, :odds, 'offen', 0.0, :now)
+                        RETURNING id;
+                    """),
+                    {"date": date_str, "einsatz": config.EINSATZ, "odds": combined, "now": now},
+                ).mappings().first()
+                combi_id = int(row["id"])
+
+            for order, pid in enumerate(ids):
+                conn.execute(
+                    text("""
+                        INSERT INTO combi_legs (combi_id, prediction_id, leg_order)
+                        VALUES (:cid, :pid, :ord);
+                    """),
+                    {"cid": combi_id, "pid": pid, "ord": order},
+                )
+
+            _refresh_combi(conn, combi_id)
+        log.info("Kombi #%s angelegt (%s Legs, Quote %.2f).", combi_id, len(ids), combined)
+        return True, f"Kombi gespeichert ({len(ids)} Legs · Quote {combined:.2f})."
+    except SQLAlchemyError as exc:
+        log.error("create_combi fehlgeschlagen: %s", exc)
+        return False, "Speichern fehlgeschlagen – siehe Log."
+
+
+def get_combis_by_date(date_str: str) -> list[dict]:
+    """Alle Kombis eines Tages inkl. Legs."""
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                text("SELECT * FROM combis WHERE date = :date ORDER BY id DESC;"),
+                {"date": date_str},
+            ).mappings().all()
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["legs"] = _fetch_combi_legs(conn, int(row["id"]))
+                result.append(item)
+            return result
+    except SQLAlchemyError as exc:
+        log.error("get_combis_by_date fehlgeschlagen: %s", exc)
+        return []
+
+
+def get_all_combis() -> list[dict]:
+    """Alle Kombis (neueste zuerst) inkl. Legs."""
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(text("SELECT * FROM combis ORDER BY date DESC, id DESC;")).mappings().all()
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["legs"] = _fetch_combi_legs(conn, int(row["id"]))
+                result.append(item)
+            return result
+    except SQLAlchemyError as exc:
+        log.error("get_all_combis fehlgeschlagen: %s", exc)
+        return []
+
+
+def get_single_predictions_for_tracking() -> list[dict]:
+    """Tipps, die nicht Teil einer Kombi sind (für Einzel-Tracking)."""
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT p.*
+                    FROM predictions p
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM combi_legs cl WHERE cl.prediction_id = p.id
+                    )
+                    ORDER BY p.date DESC, p.id DESC;
+                """)
+            ).mappings().all()
+            return [dict(r) for r in rows]
+    except SQLAlchemyError as exc:
+        log.error("get_single_predictions_for_tracking fehlgeschlagen: %s", exc)
+        return []
 
 
 # --------------------------------------------------------------------------- #
