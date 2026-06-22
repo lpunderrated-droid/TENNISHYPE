@@ -5,6 +5,7 @@
 Start:  streamlit run app.py   (läuft auf http://localhost:8501)
 """
 
+import html
 from datetime import datetime
 
 import pandas as pd
@@ -17,7 +18,109 @@ import match_analyzer
 
 log = config.log
 
-st.set_page_config(page_title="Tennis Tipp-Analyse", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="TENNISHYPE Terminal", page_icon="🎾", layout="wide")
+
+
+# --------------------------------------------------------------------------- #
+# Design: dunkles "Börsen"-Theme via Custom-CSS
+# --------------------------------------------------------------------------- #
+TRADING_CSS = """
+:root {
+  --bg:#0b0e11; --panel:#161a1e; --panel2:#1e2329; --border:#2b3139;
+  --text:#eaecef; --muted:#848e9c; --green:#0ecb81; --red:#f6465d;
+  --yellow:#f0b90b; --blue:#2f80ed;
+}
+.stApp { background: var(--bg); color: var(--text); }
+#MainMenu, footer, header [data-testid="stToolbar"] { visibility: hidden; }
+.block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1200px; }
+section[data-testid="stSidebar"] { background: #0d1116; border-right: 1px solid var(--border); }
+
+/* Kopfzeile */
+.tg-header { display:flex; align-items:center; justify-content:space-between;
+  padding:14px 18px; background:linear-gradient(90deg,#161a1e,#0f1317);
+  border:1px solid var(--border); border-radius:14px; margin-bottom:16px; }
+.tg-brand { display:flex; align-items:center; gap:12px; }
+.tg-logo { font-size:22px; font-weight:800; letter-spacing:.5px; }
+.tg-logo .accent { color: var(--green); }
+.tg-sub { color:var(--muted); font-size:12px; margin-top:2px; }
+.tg-live { display:flex; align-items:center; gap:7px; color:var(--green);
+  font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
+.tg-dot { width:8px; height:8px; border-radius:50%; background:var(--green);
+  box-shadow:0 0 0 0 rgba(14,203,129,.7); animation:pulse 1.8s infinite; }
+@keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(14,203,129,.6);} 70%{box-shadow:0 0 0 8px rgba(14,203,129,0);} 100%{box-shadow:0 0 0 0 rgba(14,203,129,0);} }
+
+/* KPI-Kacheln */
+.tg-tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px; }
+.tg-tile { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+.tg-tile .lbl { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.6px; }
+.tg-tile .val { font-size:24px; font-weight:800; margin-top:4px; font-variant-numeric:tabular-nums; }
+.tg-tile .sub { color:var(--muted); font-size:11px; margin-top:2px; }
+.val.green{color:var(--green);} .val.red{color:var(--red);} .val.yellow{color:var(--yellow);}
+
+/* Tipp-Karte (Instrument-Zeile) */
+.tcard { background:var(--panel); border:1px solid var(--border); border-radius:14px;
+  padding:16px 18px; margin-bottom:14px; transition:.15s border-color, .15s transform; }
+.tcard:hover { border-color:#3a434d; transform:translateY(-1px); }
+.tcard-top { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; }
+.matchup { font-size:18px; font-weight:700; }
+.matchup .win { color:var(--green); }
+.matchup .vs { color:var(--muted); font-weight:500; margin:0 8px; font-size:14px; }
+.matchup .loser { color:var(--text); opacity:.65; }
+.meta { color:var(--muted); font-size:12px; margin-top:5px; display:flex; gap:8px; flex-wrap:wrap; }
+.chip { background:var(--panel2); border:1px solid var(--border); border-radius:999px;
+  padding:2px 10px; font-size:11px; color:#c7ccd1; }
+.chip.surface { color:var(--yellow); border-color:#3a3417; }
+.pill { padding:4px 12px; border-radius:999px; font-size:11px; font-weight:800;
+  text-transform:uppercase; letter-spacing:.5px; }
+.pill.open { background:rgba(240,185,11,.12); color:var(--yellow); border:1px solid rgba(240,185,11,.3); }
+.pill.win  { background:rgba(14,203,129,.12); color:var(--green); border:1px solid rgba(14,203,129,.3); }
+.pill.loss { background:rgba(246,70,57,.12); color:var(--red); border:1px solid rgba(246,70,57,.3); }
+
+.tgrid { display:grid; grid-template-columns:1.4fr .8fr .8fr 1fr; gap:10px; margin-top:14px; }
+.cell { background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+.cell .k { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.6px; }
+.cell .v { font-size:18px; font-weight:800; margin-top:3px; font-variant-numeric:tabular-nums; }
+.cell .v.tip { font-size:15px; color:var(--green); }
+.cell .v.price { color:var(--text); }
+.cell .v.green{color:var(--green);} .cell .v.red{color:var(--red);}
+.cell .v.warn{color:var(--yellow); font-size:14px;}
+
+.confwrap { margin-top:14px; }
+.confhead { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:6px; }
+.confhead b { color:var(--text); }
+.confbar { height:8px; background:#0c0f12; border:1px solid var(--border); border-radius:999px; overflow:hidden; }
+.conffill { height:100%; background:linear-gradient(90deg,var(--green),#10d18a); border-radius:999px; }
+
+.tg-empty { background:var(--panel); border:1px dashed var(--border); border-radius:14px;
+  padding:34px; text-align:center; color:var(--muted); }
+.tg-empty .big{ font-size:34px; } .tg-empty .h{ color:var(--text); font-size:17px; font-weight:700; margin:8px 0 4px; }
+
+.tg-section { font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.8px;
+  margin:6px 0 10px; font-weight:700; }
+.stButton>button { background:var(--panel2); color:var(--text); border:1px solid var(--border);
+  border-radius:10px; font-weight:600; }
+.stButton>button:hover { border-color:var(--green); color:var(--green); }
+hr { border-color:var(--border); }
+"""
+
+
+def inject_css() -> None:
+    """Bindet das dunkle Trading-Theme ein. Gibt None zurück."""
+    st.markdown(f"<style>{TRADING_CSS}</style>", unsafe_allow_html=True)
+    return None
+
+
+def _tiles_html(tiles: list[dict]) -> str:
+    """Baut eine Reihe KPI-Kacheln. tiles: [{lbl, val, sub, tone}] -> HTML-String."""
+    cells = []
+    for t in tiles:
+        tone = t.get("tone", "")
+        sub = f"<div class='sub'>{html.escape(str(t.get('sub','')))}</div>" if t.get("sub") else ""
+        cells.append(
+            f"<div class='tg-tile'><div class='lbl'>{html.escape(t['lbl'])}</div>"
+            f"<div class='val {tone}'>{html.escape(str(t['val']))}</div>{sub}</div>"
+        )
+    return f"<div class='tg-tiles'>{''.join(cells)}</div>"
 
 
 # --------------------------------------------------------------------------- #
@@ -71,9 +174,15 @@ def status_badge(status: str) -> str:
 def render_tips_page() -> None:
     """Rendert die Seite mit den heutigen Tipp-Cards. Gibt None zurück."""
     heute = datetime.now().strftime("%d.%m.%Y")
-    st.title(f"🎾 Tennis Tipp-Analyse – {heute}")
+    st.markdown(
+        "<div class='tg-header'><div class='tg-brand'><div>"
+        "<div class='tg-logo'>TENNIS<span class='accent'>HYPE</span></div>"
+        f"<div class='tg-sub'>Daily Value Picks · {heute}</div></div></div>"
+        "<div class='tg-live'><span class='tg-dot'></span>Live</div></div>",
+        unsafe_allow_html=True,
+    )
 
-    col_btn, _ = st.columns([1, 4])
+    col_btn, _ = st.columns([1, 5])
     with col_btn:
         if st.button("🔄 Tipps neu laden"):
             load_today_tips.clear()
@@ -81,67 +190,91 @@ def render_tips_page() -> None:
     with st.spinner("Analysiere heutige Matches …"):
         tips = load_today_tips(datetime.now().strftime("%Y-%m-%d"))
 
-    # Metric-Row
     gesamt_einsatz = len(tips) * config.EINSATZ
     offene = sum(1 for t in tips if t["status"] == "offen")
     eingetragen = sum(1 for t in tips if t["status"] != "offen")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Heutiger Einsatz gesamt", f"{gesamt_einsatz:.0f} €")
-    m2.metric("Offene Tipps", offene)
-    m3.metric("Bereits eingetragen", eingetragen)
-
-    st.divider()
+    moegl_gewinn = sum(
+        (t["betano_odds"] * config.EINSATZ - config.EINSATZ)
+        for t in tips if t.get("betano_odds")
+    )
+    st.markdown(
+        _tiles_html([
+            {"lbl": "Aktive Picks", "val": len(tips), "tone": "green"},
+            {"lbl": "Einsatz gesamt", "val": f"{gesamt_einsatz:.0f} €"},
+            {"lbl": "Möglicher Gewinn", "val": f"+{moegl_gewinn:.2f} €", "tone": "green"},
+            {"lbl": "Offen", "val": offene, "tone": "yellow"},
+            {"lbl": "Eingetragen", "val": eingetragen},
+        ]),
+        unsafe_allow_html=True,
+    )
 
     if not tips:
-        st.info(
-            "ℹ️ Aktuell keine Tipps verfügbar. Entweder gibt es heute keine Tennis-Matches "
-            "mit Quoten, oder kein Match erreicht die Mindest-Konfidenz von "
-            f"{config.MIN_KONFIDENZ:.0%}. Es wird bewusst nicht aufgefüllt."
+        st.markdown(
+            "<div class='tg-empty'><div class='big'>📉</div>"
+            "<div class='h'>Keine Picks über der Schwelle</div>"
+            f"<div>Aktuell erreicht kein Match die Mindest-Konfidenz von {config.MIN_KONFIDENZ:.0%}. "
+            "Es wird bewusst nicht aufgefüllt – Qualität vor Quantität.</div></div>",
+            unsafe_allow_html=True,
         )
         return None
 
-    for t in tips:
-        _render_tip_card(t)
+    st.markdown("<div class='tg-section'>Heutige Positionen</div>", unsafe_allow_html=True)
+    st.markdown("".join(_tip_card_html(t) for t in tips), unsafe_allow_html=True)
     return None
 
 
-def _render_tip_card(t: dict) -> None:
-    """Rendert eine einzelne Tipp-Card. Gibt None zurück."""
-    with st.container(border=True):
-        kopf, quote = st.columns([3, 1])
-        with kopf:
-            st.subheader(f"{t['player1']}  vs  {t['player2']}")
-            badge = f"🏟️ {t.get('tournament') or 'Turnier unbekannt'}  ·  🎾 {t.get('surface') or '?'}"
-            if t.get("match_time"):
-                badge += f"  ·  🕒 {t['match_time']}"
-            st.caption(badge)
-            st.markdown(f"**Unser Tipp:** **:blue[{t['tip']}]**")
-        with quote:
-            if t.get("betano_odds"):
-                st.metric("Betano-Quote", f"{t['betano_odds']:.2f}")
-            else:
-                st.markdown("### ⚠️ Quote fehlt")
+def _tip_card_html(t: dict) -> str:
+    """Baut eine Tipp-Karte im Trading-Look. Gibt einen HTML-String zurück."""
+    tip = t.get("tip", "")
+    p1, p2 = t.get("player1", ""), t.get("player2", "")
+    p1_cls = "win" if tip == p1 else "loser"
+    p2_cls = "win" if tip == p2 else "loser"
 
-        konfidenz = float(t.get("confidence") or 0.0)
-        st.progress(min(1.0, konfidenz), text=f"Konfidenz: {konfidenz:.0%}")
+    meta = [f"<span class='chip surface'>🎾 {html.escape(str(t.get('surface') or '—'))}</span>",
+            f"<span class='chip'>🏟️ {html.escape(str(t.get('tournament') or '—'))}</span>"]
+    if t.get("match_time"):
+        meta.append(f"<span class='chip'>🕒 {html.escape(str(t['match_time']))}</span>")
 
-        c1, c2, c3 = st.columns(3)
-        prob_calc = t.get("prob_calculated")
-        prob_impl = t.get("prob_implied")
-        c1.markdown(
-            f"**Unsere Wahrscheinlichkeit:** {prob_calc:.0%}" if prob_calc is not None else "—"
-        )
-        c2.markdown(
-            f"**Buchmacher (implizit):** {prob_impl:.0%}" if prob_impl is not None else "**Buchmacher:** —"
-        )
-        if t.get("betano_odds"):
-            gewinn = t["betano_odds"] * config.EINSATZ - config.EINSATZ
-            c3.markdown(f"**Einsatz:** 10 €  ·  **Möglicher Gewinn:** {gewinn:.2f} €")
-        else:
-            c3.markdown("**Einsatz:** 10 €")
+    odds = t.get("betano_odds")
+    if odds:
+        quote_cell = f"<div class='cell'><div class='k'>Quote</div><div class='v price'>{odds:.2f}</div></div>"
+        payout = odds * config.EINSATZ - config.EINSATZ
+        payout_cell = f"<div class='cell'><div class='k'>Payout (10€)</div><div class='v green'>+{payout:.2f} €</div></div>"
+    else:
+        quote_cell = "<div class='cell'><div class='k'>Quote</div><div class='v warn'>⚠️ fehlt</div></div>"
+        payout_cell = "<div class='cell'><div class='k'>Payout (10€)</div><div class='v'>—</div></div>"
 
-        st.markdown(f"**Status:** {status_badge(t['status'])}")
-    return None
+    prob_calc = t.get("prob_calculated")
+    prob_impl = t.get("prob_implied")
+    if prob_calc is not None and prob_impl is not None:
+        edge = (prob_calc - prob_impl) * 100
+        edge_cls = "green" if edge >= 0 else "red"
+        edge_cell = f"<div class='cell'><div class='k'>Edge</div><div class='v {edge_cls}'>{edge:+.0f}%</div></div>"
+        conf_sub = f"Modell <b>{prob_calc:.0%}</b> · Buchmacher <b>{prob_impl:.0%}</b>"
+    else:
+        edge_cell = "<div class='cell'><div class='k'>Edge</div><div class='v'>—</div></div>"
+        conf_sub = ""
+
+    pill = {"gewonnen": ("win", "Gewonnen"), "verloren": ("loss", "Verloren")}.get(
+        t.get("status"), ("open", "Offen")
+    )
+    konf = float(t.get("confidence") or 0.0)
+
+    return (
+        "<div class='tcard'>"
+        "<div class='tcard-top'><div>"
+        f"<div class='matchup'><span class='{p1_cls}'>{html.escape(p1)}</span>"
+        f"<span class='vs'>vs</span><span class='{p2_cls}'>{html.escape(p2)}</span></div>"
+        f"<div class='meta'>{''.join(meta)}</div></div>"
+        f"<span class='pill {pill[0]}'>{pill[1]}</span></div>"
+        "<div class='tgrid'>"
+        f"<div class='cell'><div class='k'>Tipp</div><div class='v tip'>{html.escape(tip)}</div></div>"
+        f"{quote_cell}{edge_cell}{payout_cell}</div>"
+        "<div class='confwrap'>"
+        f"<div class='confhead'><span>Konfidenz <b>{konf:.0%}</b></span><span>{conf_sub}</span></div>"
+        f"<div class='confbar'><div class='conffill' style='width:{min(100, konf*100):.0f}%'></div></div>"
+        "</div></div>"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -149,7 +282,13 @@ def _render_tip_card(t: dict) -> None:
 # --------------------------------------------------------------------------- #
 def render_tracking_page() -> None:
     """Rendert die Tracking-Seite inkl. Metrics, Tabelle und Charts. Gibt None zurück."""
-    st.title("📊 Tracking & Statistiken")
+    st.markdown(
+        "<div class='tg-header'><div class='tg-brand'><div>"
+        "<div class='tg-logo'>PORT<span class='accent'>FOLIO</span></div>"
+        "<div class='tg-sub'>Tracking & Performance</div></div></div>"
+        "<div class='tg-live'><span class='tg-dot'></span>Sync</div></div>",
+        unsafe_allow_html=True,
+    )
 
     alle = database.get_all_predictions()
     settled = [p for p in alle if p["status"] in ("gewonnen", "verloren")]
@@ -161,11 +300,18 @@ def render_tracking_page() -> None:
     roi = (gesamt_pnl / settled_einsatz * 100) if settled_einsatz > 0 else 0.0
     trefferquote = (len(gewonnen) / len(settled) * 100) if settled else 0.0
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Gesamteinsatz", f"{gesamt_einsatz:.0f} €")
-    m2.metric("Gewinn/Verlust", f"{gesamt_pnl:+.2f} €")
-    m3.metric("ROI", f"{roi:+.1f} %")
-    m4.metric("Trefferquote", f"{trefferquote:.1f} %")
+    pnl_tone = "green" if gesamt_pnl > 0 else ("red" if gesamt_pnl < 0 else "")
+    roi_tone = "green" if roi > 0 else ("red" if roi < 0 else "")
+    st.markdown(
+        _tiles_html([
+            {"lbl": "Gesamteinsatz", "val": f"{gesamt_einsatz:.0f} €", "sub": f"{len(alle)} Picks"},
+            {"lbl": "Gewinn / Verlust", "val": f"{gesamt_pnl:+.2f} €", "tone": pnl_tone},
+            {"lbl": "ROI", "val": f"{roi:+.1f} %", "tone": roi_tone},
+            {"lbl": "Trefferquote", "val": f"{trefferquote:.1f} %",
+             "sub": f"{len(gewonnen)}/{len(settled)} settled"},
+        ]),
+        unsafe_allow_html=True,
+    )
 
     _render_result_sidebar()
 
@@ -207,7 +353,7 @@ def _render_result_sidebar() -> None:
 
 def _render_table(alle: list[dict]) -> None:
     """Rendert die filter- und sortierbare Tabelle aller Tipps. Gibt None zurück."""
-    st.subheader("Alle Tipps")
+    st.markdown("<div class='tg-section'>Order-Historie</div>", unsafe_allow_html=True)
     if not alle:
         st.info("Noch keine Tipps vorhanden.")
         return None
@@ -243,9 +389,9 @@ def _render_table(alle: list[dict]) -> None:
     def _farbe(val: float) -> str:
         """Färbt Gewinn grün, Verlust rot."""
         if val > 0:
-            return "color: #16a34a; font-weight: 600;"
+            return "color: #0ecb81; font-weight: 700;"
         if val < 0:
-            return "color: #dc2626; font-weight: 600;"
+            return "color: #f6465d; font-weight: 700;"
         return ""
 
     styler = df.style.map(_farbe, subset=["G/V €"]).format(
@@ -257,7 +403,7 @@ def _render_table(alle: list[dict]) -> None:
 
 def _render_charts(settled: list[dict]) -> None:
     """Rendert die drei Plotly-Charts mit Fallbacks. Gibt None zurück."""
-    st.subheader("Auswertung")
+    st.markdown("<div class='tg-section'>Auswertung</div>", unsafe_allow_html=True)
     if not settled:
         st.info("Sobald Ergebnisse eingetragen sind, erscheinen hier Charts.")
         return None
@@ -278,7 +424,8 @@ def _render_charts(settled: list[dict]) -> None:
             tmp["kumuliert"] = tmp["gewinn_verlust"].cumsum()
             fig = px.line(tmp, x="date", y="kumuliert", markers=True,
                           labels={"date": "Datum", "kumuliert": "Kumuliert €"})
-            fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=320)
+            fig.update_traces(line_color="#0ecb81", marker_color="#0ecb81")
+            _style_fig(fig)
             st.plotly_chart(fig, use_container_width=True)
 
     # Chart 2: Trefferquote pro Monat
@@ -294,7 +441,9 @@ def _render_charts(settled: list[dict]) -> None:
             grp["quote"] = grp["quote"] * 100
             fig = px.bar(grp, x="monat", y="quote",
                          labels={"monat": "Monat", "quote": "Trefferquote %"})
-            fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=320, yaxis_range=[0, 100])
+            fig.update_traces(marker_color="#0ecb81")
+            _style_fig(fig)
+            fig.update_layout(yaxis_range=[0, 100])
             st.plotly_chart(fig, use_container_width=True)
 
     # Chart 3: Durchschnittliche Konfidenz Gewonnen vs Verloren
@@ -304,10 +453,26 @@ def _render_charts(settled: list[dict]) -> None:
     grp = tmp.groupby("status").agg(konfidenz=("confidence", "mean")).reset_index()
     grp["status"] = grp["status"].map({"gewonnen": "Gewonnen", "verloren": "Verloren"})
     fig = px.bar(grp, x="status", y="konfidenz", color="status",
-                 color_discrete_map={"Gewonnen": "#16a34a", "Verloren": "#dc2626"},
+                 color_discrete_map={"Gewonnen": "#0ecb81", "Verloren": "#f6465d"},
                  labels={"status": "", "konfidenz": "Ø Konfidenz %"})
-    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=320, showlegend=False)
+    _style_fig(fig)
+    fig.update_layout(showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
+    return None
+
+
+def _style_fig(fig) -> None:
+    """Wendet das dunkle Theme auf eine Plotly-Figur an. Gibt None zurück."""
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#eaecef",
+        margin=dict(l=10, r=10, t=10, b=10),
+        height=320,
+    )
+    fig.update_xaxes(gridcolor="#2b3139", zerolinecolor="#2b3139")
+    fig.update_yaxes(gridcolor="#2b3139", zerolinecolor="#2b3139")
     return None
 
 
@@ -316,6 +481,7 @@ def _render_charts(settled: list[dict]) -> None:
 # --------------------------------------------------------------------------- #
 def main() -> None:
     """Einstiegspunkt: initialisiert DB und steuert die Seiten-Navigation."""
+    inject_css()
     if not check_login():
         return None
 
