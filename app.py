@@ -311,15 +311,29 @@ def check_login() -> bool:
 # --------------------------------------------------------------------------- #
 # Daten-Lade-Hilfen
 # --------------------------------------------------------------------------- #
-@st.cache_data(ttl=86400, show_spinner=False)
-def _ensure_today_tips_generated(_date: str) -> bool:
-    """Generiert Tipps für den Tag nur einmal (wenn DB leer). Gibt True zurück."""
-    try:
-        if database.get_predictions_by_date(_date):
-            return True
-        match_analyzer.generate_top_tips()
+def _tips_gen_state_key(date_str: str) -> str:
+    return f"tips_gen_{date_str}"
+
+
+def _ensure_today_tips_generated(date_str: str) -> bool:
+    """Generiert Tipps für den Tag, wenn die DB leer ist. Gibt True zurück wenn Tipps da sind."""
+    if database.get_predictions_by_date(date_str):
         return True
+
+    state_key = _tips_gen_state_key(date_str)
+    state = st.session_state.get(state_key)
+    if state == "empty":
+        return False
+    if state == "running":
+        return False
+
+    st.session_state[state_key] = "running"
+    try:
+        tips = match_analyzer.generate_top_tips()
+        st.session_state[state_key] = "done" if tips else "empty"
+        return bool(tips)
     except Exception as exc:
+        st.session_state.pop(state_key, None)
         log.error("_ensure_today_tips_generated fehlgeschlagen: %s", exc)
         return False
 
@@ -444,14 +458,23 @@ def render_tips_page() -> None:
     col_btn, col_sp = st.columns([1, 3])
     with col_btn:
         if st.button("🔄 Tipps neu laden", use_container_width=True):
-            _ensure_today_tips_generated.clear()
+            heute_key = datetime.now().strftime("%Y-%m-%d")
+            st.session_state.pop(_tips_gen_state_key(heute_key), None)
             load_player_context.clear()
             st.rerun()
 
+    date_str = datetime.now().strftime("%Y-%m-%d")
     with st.spinner("Lade heutige Tipps …"):
         tips = load_today_tips()
 
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    gen_state = st.session_state.get(_tips_gen_state_key(date_str))
+    if not tips and gen_state == "running":
+        st.info("Tipps werden berechnet – Seite in Kürze neu laden oder „Tipps neu laden“ klicken.")
+    elif not tips and gen_state == "empty":
+        st.warning(
+            f"Aktuell erreicht kein Match die Mindest-Konfidenz von {config.MIN_KONFIDENZ:.0%}. "
+            "Es wird bewusst nicht aufgefüllt – Qualität vor Quantität."
+        )
     stats = _today_betting_stats(tips, date_str)
 
     gewinn_tone = "green" if stats["moeglich"] > 0 else ""
@@ -486,6 +509,8 @@ def render_tips_page() -> None:
     )
 
     if not tips:
+        if gen_state == "running":
+            return None
         st.markdown(
             "<div class='tg-empty'><div class='big'>📉</div>"
             "<div class='h'>Keine Picks über der Schwelle</div>"

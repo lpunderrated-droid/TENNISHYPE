@@ -297,11 +297,11 @@ def generate_top_tips() -> list[dict]:
         log.info("Keine Matches/Quoten für heute verfügbar.")
         return []
 
-    # Match-Historie einmal laden (Form + Oberfläche für alle Spieler des Tages)
+    # Pass 1: Bulk-Historie (schnell). player_key nur später für Finalisten.
     spieler = {m["player1"] for m in matches} | {m["player2"] for m in matches}
-    histories = data_fetcher.build_match_histories_with_supplement(spieler)
+    histories = data_fetcher.build_match_histories_from_bulk(spieler)
     mit_historie = sum(1 for n in spieler if histories.get(n))
-    log.info("Match-Historie: %s/%s Spieler mit Daten.", mit_historie, len(spieler))
+    log.info("Match-Historie (Bulk): %s/%s Spieler mit Daten.", mit_historie, len(spieler))
 
     # Durchlauf 1 (schnell, ohne H2H): grobe Vorauswahl über alle Matches
     vorauswahl: list[tuple[dict, dict]] = []
@@ -314,6 +314,10 @@ def generate_top_tips() -> list[dict]:
     # Nur die besten Kandidaten weiterverfolgen (begrenzt die H2H-API-Aufrufe)
     vorauswahl.sort(key=lambda paar: paar[1]["confidence"], reverse=True)
     engere_wahl = vorauswahl[: config.MAX_TIPPS_PRO_TAG * 2]
+
+    # Form-Historie nur für Finalisten nachziehen (spart dutzende API-Calls)
+    finalisten = {m["player1"] for m, _ in engere_wahl} | {m["player2"] for m, _ in engere_wahl}
+    data_fetcher.supplement_sparse_histories(histories, finalisten)
 
     # Durchlauf 2 (genau, mit H2H): nur für die engere Auswahl
     kandidaten: list[dict] = []

@@ -629,11 +629,16 @@ def _merge_match_histories(a: list[dict], b: list[dict]) -> list[dict]:
     return merged
 
 
-def build_match_histories_with_supplement(player_names: set[str]) -> dict[str, list[dict]]:
-    """Baut Match-Historien aus Bulk-Fixtures und ergänzt sparse Spieler per player_key."""
+def build_match_histories_from_bulk(player_names: set[str]) -> dict[str, list[dict]]:
+    """Match-Historien nur aus Bulk-Fixtures (schnell, ohne player_key-Abrufe)."""
     fixtures = fetch_finished_fixtures()
-    histories = build_match_histories(fixtures, player_names)
+    return build_match_histories(fixtures, player_names)
 
+
+def supplement_sparse_histories(
+    histories: dict[str, list[dict]], player_names: set[str]
+) -> dict[str, list[dict]]:
+    """Ergänzt nur die genannten Spieler per player_key, wenn Bulk-Daten dünn sind."""
     sparse = [n for n in player_names if len(histories.get(n, [])) < config.FORM_LETZTE_N]
     if not sparse:
         return histories
@@ -652,6 +657,12 @@ def build_match_histories_with_supplement(player_names: set[str]) -> dict[str, l
         log.info("Form-Historie für %s via player_key ergänzt (%s Spiele).", name, len(merged))
 
     return histories
+
+
+def build_match_histories_with_supplement(player_names: set[str]) -> dict[str, list[dict]]:
+    """Baut Match-Historien aus Bulk-Fixtures und ergänzt sparse Spieler per player_key."""
+    histories = build_match_histories_from_bulk(player_names)
+    return supplement_sparse_histories(histories, player_names)
 
 
 def build_match_histories(fixtures: list[dict], player_names: set[str]) -> dict[str, list[dict]]:
